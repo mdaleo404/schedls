@@ -20,6 +20,18 @@ from schedls.security import (
     validate_name,
 )
 
+_UNTRUSTED_UID = 65534
+
+
+def _relinquish_ownership(path) -> None:
+    """Own a fixture by a non-root user when the suite itself runs as root.
+
+    The helper checks distinguish root-owned files from user-owned ones, so a
+    root test process must make its "untrusted" fixtures owned by someone else.
+    """
+    if os.geteuid() == 0:
+        os.chown(path, _UNTRUSTED_UID, _UNTRUSTED_UID)
+
 
 @pytest.mark.parametrize(
     "name",
@@ -114,6 +126,7 @@ def test_resolve_helper_rejects_user_owned_dir_when_root(tmp_path, monkeypatch) 
     helper = helper_dir / "evilhelper"
     helper.write_text("#!/bin/sh\ntrue\n")
     helper.chmod(0o755)
+    _relinquish_ownership(helper_dir)
     monkeypatch.setenv("PATH", str(helper_dir))
     monkeypatch.setattr(os, "geteuid", lambda: 0)
     assert resolve_helper("evilhelper") is None
@@ -134,6 +147,7 @@ def test_runner_refuses_untrusted_absolute_helper(tmp_path, monkeypatch) -> None
     helper = tmp_path / "evil"
     helper.write_text("#!/bin/sh\ntrue\n")
     helper.chmod(0o755)
+    _relinquish_ownership(helper)
     monkeypatch.setattr(os, "geteuid", lambda: 0)
     with pytest.raises(SafetyRefusalError):
         CommandRunner().run([str(helper)])

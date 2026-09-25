@@ -1,10 +1,20 @@
 from __future__ import annotations
 
+import time
 from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
 from schedls import timefmt
+
+
+@pytest.fixture
+def london_tz(monkeypatch):
+    monkeypatch.setenv("TZ", "Europe/London")
+    time.tzset()
+    yield
+    monkeypatch.undo()
+    time.tzset()
 
 
 @pytest.mark.parametrize(
@@ -50,10 +60,11 @@ def test_parse_placeholders() -> None:
     assert timefmt.parse_systemd_timestamp("0") is None
 
 
-def test_format_datetime_round_trip_zone() -> None:
+def test_format_datetime_round_trip_zone(london_tz) -> None:
     dt = datetime(2026, 9, 25, 2, 0, 0, tzinfo=timezone(timedelta(hours=1)))
     text = timefmt.format_datetime(dt)
     assert text.startswith("Fri 25 Sep 2026 02:00:00")
+    assert text.endswith("BST")
 
 
 def test_format_short_relative() -> None:

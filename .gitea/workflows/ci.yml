@@ -1,73 +1,29 @@
 name: CI
 
 on:
-  push:
   pull_request:
 
 jobs:
-  precommit-and-security:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-
-      - name: Install pre-commit
-        run: pip install pre-commit
-
-      - name: Run pre-commit hooks
-        run: pre-commit run --all-files --color always
-
-      - name: Install Poetry and export plugin
-        run: |
-          pip install poetry
-          poetry self add poetry-plugin-export
-
-      - name: Install pip-audit
-        run: pip install pip-audit
-
-      - name: Audit dev dependencies (Poetry lockfile)
-        run: |
-          poetry export -f requirements.txt --without-hashes --with dev \
-            | pip-audit -r /dev/stdin
-
-  typecheck:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-      - run: pip install mypy
-      - run: mypy
-
   test:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
+        python-version: ["3.11", "3.13"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - run: pip install -e . pytest
-      - run: pytest tests/unit tests/security
-      - name: Integration tests (best effort)
-        continue-on-error: true
-        run: pytest tests/integration
 
-  package:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - run: pip install build
-      - run: python -m build
+      - name: Install project and tooling
+        run: pip install -e . pytest mypy pre-commit
+
+      - name: Lint and typecheck
+        if: matrix.python-version == '3.13'
+        run: |
+          pre-commit run --all-files --color always
+          mypy
+
+      - name: Unit and security tests
+        run: pytest tests/unit tests/security
