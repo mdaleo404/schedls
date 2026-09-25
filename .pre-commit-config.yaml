@@ -1,0 +1,31 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        name: Enforce removal of trailing whitespace
+      - id: end-of-file-fixer
+        name: Enforce end of the file format
+      - id: check-yaml
+        name: Check YAML syntax
+      - id: check-toml
+        name: Check TOML syntax
+      - id: check-merge-conflict
+        name: Check for merge conflict markers
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.8
+    hooks:
+      - id: ruff
+        name: Lint with ruff
+        args: ["--fix"]
+      - id: ruff-format
+        name: Format with ruff
+
+  - repo: https://github.com/PyCQA/bandit
+    rev: 1.9.4
+    hooks:
+      - id: bandit
+        name: Security scan with Bandit
+        files: ^src/
+        args: ["-lll", "-iii", "-s", "B603,B604,B607"]

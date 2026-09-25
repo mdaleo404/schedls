@@ -1,14 +1,31 @@
 [project]
 name = "schedls"
-version = "0.0.1"
+version = "0.1.0"
 description = "Inspect and manage Linux scheduled jobs"
 authors = [
     { name = "Marco D'Aleo", email = "marco@marcodaleo.com" }
 ]
 license = "GPL-3.0-or-later"
 readme = "README.md"
-requires-python = ">=3.10,<4.0"
+requires-python = ">=3.11,<4.0"
 dependencies = []
+keywords = ["cron", "crontab", "systemd", "timer", "scheduler", "cli", "sysadmin"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: System Administrators",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: System :: Systems Administration",
+]
+
+[project.urls]
+Homepage = "https://git.sysmd.uk/mdaleo404/schedls"
+Repository = "https://git.sysmd.uk/mdaleo404/schedls"
 
 [project.scripts]
 schedls = "schedls.cli:main"
@@ -16,3 +33,39 @@ schedls = "schedls.cli:main"
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.group.dev.dependencies]
+pre-commit = ">=4.0"
+pytest = ">=8.0"
+pytest-cov = ">=5.0"
+ruff = ">=0.6"
+mypy = ">=1.11"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "S"]
+# S603/S607: subprocess is confined to runner.py and always uses an argv.
+# S604: matches our own Command(shell=...) dataclass field, not subprocess usage.
+ignore = ["S603", "S604", "S607"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S105", "S106"]
+
+[tool.mypy]
+python_version = "3.11"
+packages = ["schedls"]
+mypy_path = "src"
+strict = true
+warn_unreachable = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q --strict-markers"
+markers = [
+    "integration: tests that require native systemd/cron facilities",
+]

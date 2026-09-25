@@ -1,0 +1,13 @@
+# Managed by schedls
+# Name: backup
+
+[Unit]
+Description=schedls job backup (timer)
+
+[Timer]
+OnCalendar=*-*-* 02:00:00
+Persistent=true
+Unit=schedls-backup.service
+
+[Install]
+WantedBy=timers.target

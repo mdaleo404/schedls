@@ -1,0 +1,9 @@
+# Managed by schedls
+# Name: backup
+
+[Unit]
+Description=schedls job backup
+
+[Service]
+Type=oneshot
+ExecStart="/usr/local/bin/backup" "/srv/data"
