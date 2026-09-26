@@ -63,11 +63,19 @@ systemd extras (persistent, jitter, accuracy, working directory, environment).
 ```console
 $ schedls new backup --timer --daily 02:00 --persistent -- /usr/local/bin/backup /srv/data
 $ schedls new cleanup --cron --cron-expr '0 4 * * 0' -- /usr/local/bin/cleanup
+$ sudo schedls new updates --cron --system --daily 03:00 -- /usr/local/bin/updates
+$ sudo schedls new report --cron --system --daily 04:00 --run-as www-data -- /usr/local/bin/report
 $ schedls new backup -i
 ```
 
 Creates a scheduled job. `NAME` and a backend (`--timer` or `--cron`) are
 required unless `--interactive` is used.
+
+Cron jobs are created for the current user's crontab. With `--system` (root
+only) the job is created as an `/etc/cron.d/schedls-NAME` drop-in and runs as
+`root` unless `--run-as USER` is given. System cron names may contain letters,
+digits, `_` and `-` only, because cron ignores `cron.d` file names containing a
+period. `--run-as` is valid only together with `--cron --system`.
 
 The command to run is everything after `--`:
 
@@ -112,6 +120,8 @@ $ schedls rm backup --dry-run
 ```
 
 Removes a schedls-managed job and its files. Unmanaged jobs cannot be removed.
+For a system cron job this removes the `/etc/cron.d/schedls-NAME` drop-in and
+refuses to touch anything whose markers no longer match.
 
 ### `enable NAME` / `disable NAME`
 
@@ -257,6 +267,9 @@ $ schedls edit backup -i
 ```
 
 - Prompts use stdin only; no external editor or pager is ever launched.
+- `new` asks for the scope (user or system) unless `--user`/`--system` was
+  given. Choosing system for a cron job also asks which user it should run as
+  (`--run-as`, default `root`).
 - A terminal is required. With piped or redirected input, `schedls` exits `3`
   and asks you to pass flags instead.
 - Interactive mode cannot be combined with `--json` (exit `2`).

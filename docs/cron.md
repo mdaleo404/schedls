@@ -1,11 +1,25 @@
 # cron backend
 
-`schedls` reads and edits the **current user's crontab** through the `crontab`
-utility. It never writes to `/var/spool/cron*` directly.
+`schedls` reads every cron source visible to it:
+
+- the **current user's crontab**, through the `crontab` utility;
+- **system crontabs**: `/etc/crontab`, `/etc/cron.d/*`;
+- **periodic directories**: `/etc/cron.{hourly,daily,weekly,monthly}/*`;
+- **other users' crontabs** (`/var/spool/cron/crontabs/*` on Debian-style
+  systems, `/var/spool/cron/*` elsewhere) when running as root.
+
+Cron jobs are named after where they live: system entries are `<file>:<line>`,
+periodic scripts are named after the script, spool entries are `<user>:<line>`,
+and the current user's crontab entries are `cron-<line>`. Jobs created by
+`schedls` are listed under their schedule name instead.
+
+`schedls` writes either through the `crontab` utility (current user) or as an
+`/etc/cron.d/schedls-<name>` drop-in (system, root only). It never writes to
+`/var/spool/cron*` directly.
 
 ## Reading
 
-The crontab is read with `crontab -l` and parsed losslessly into lines:
+The user crontab is read with `crontab -l` and parsed losslessly into lines:
 
 - blank lines;
 - comments;
@@ -13,12 +27,18 @@ The crontab is read with `crontab -l` and parsed losslessly into lines:
 - five-field entries and `@` nicknames;
 - `schedls:begin` / `schedls:end` managed-block markers.
 
+System crontabs add a user field between the schedule and the command
+(`min hour dom mon dow USER command`). Files in `/etc/cron.d` whose names
+contain a period, and hidden files, are ignored because cron ignores them too.
+Periodic directories only contribute executable, run-parts-style file names.
+
 Every unrelated line is preserved exactly. `schedls` does not reformat, sort,
 normalize, or rewrite crontab content it did not create.
 
 ## Managed blocks
 
-Jobs created by `schedls` live in a delimited block:
+Jobs created by `schedls` in the current user's crontab live in a delimited
+block:
 
 ```cron
 # schedls:begin name=backup
@@ -28,6 +48,30 @@ Jobs created by `schedls` live in a delimited block:
 
 If markers are malformed or a `begin` has no matching `end`, mutations refuse
 to proceed rather than guess.
+
+## System drop-ins
+
+A system cron job is a file named after the schedule:
+
+```cron
+# Managed by schedls
+# schedls:begin name=backup
+0 2 * * * root /usr/local/bin/backup /srv/data
+# schedls:end name=backup
+```
+
+Only `/etc/cron.d/schedls-<name>` files carrying a matching managed block are
+treated as managed. A `schedls-` prefixed file whose markers are missing or
+malformed is listed as unmanaged (`schedls-<name>:<line>`) and cannot be
+removed. Creating system jobs requires root and a trusted `/etc/cron.d`
+directory: not a symlink, owned by root, and not group- or other-writable.
+Removal deletes only the drop-in file, after re-checking that it still matches
+the snapshot and markers. Cron picks up `/etc/cron.d` changes by itself, so no
+daemon reload is issued.
+
+Use `--run-as USER` to run a system job as another account (default `root`).
+The interactive wizard (`schedls new -i`) asks for the scope, and choosing the
+system scope for a cron job then prompts for the run-as user.
 
 ## Command rendering
 
@@ -56,10 +100,15 @@ shell mode from characters such as `|`, `>`, `&&` or `$()`.
 
 ## Installation and validation
 
-When the local `crontab` supports syntax testing (`crontab -T`), the new
+When the local `crontab` supports syntax testing (`crontab -T`), a new user
 crontab is validated before installation. The native `crontab` install remains
 authoritative. The previous crontab text is retained and restored if
 installation fails or the crontab changed since the plan was prepared.
+
+System drop-ins are validated when they are rendered and written atomically;
+`crontab -T` only understands user-format crontabs, so it is not used for them.
+A file written by `schedls` is re-read and its managed block verified before
+the command reports success.
 
 Capabilities are feature-detected, never assumed:
 
@@ -85,6 +134,8 @@ command-line compatibility but have no effect on cron jobs; see
 
 ## Not yet supported
 
-- system cron (`/etc/crontab`, `/etc/cron.d`, periodic directories);
-- editing existing cron jobs;
-- cross-user crontabs.
+- editing cron jobs (user or system);
+- token-level updates of `/etc/crontab` (read-only, shared file);
+- anacron (`/etc/anacrontab`);
+- removing or editing periodic directory scripts;
+- modifying other users' spool crontabs (read-only, root only).

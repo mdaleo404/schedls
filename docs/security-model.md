@@ -58,7 +58,11 @@ never uses it to build a filesystem path: unit names are always derived from
 the validated job name (`schedls-<name>.timer` / `.service`). Generated unit
 names are re-validated before they are written to a temporary directory, so a
 crafted unit cannot redirect writes or removals outside the trusted unit
-directory.
+directory. System cron drop-ins follow the same rule: the path is always
+`/etc/cron.d/schedls-<name>` from the validated schedule name, with letters,
+digits, `_` and `-` only, and removal refuses any path that is not exactly the
+expected one. System names never contain a period, because cron ignores
+`cron.d` files with dots.
 
 ### Untrusted output
 
@@ -89,14 +93,18 @@ Configuration is treated as opaque data. Malformed `schedls` cron markers cause
 mutation to fail closed rather than guess. Unknown crontab lines are preserved
 byte-for-byte. A systemd unit whose name starts with `schedls-` is only treated
 as managed when its file carries the `# Managed by schedls` and `# Name:`
-markers, so a same-named foreign unit is not modified.
+markers, so a same-named foreign unit is not modified. Likewise a
+`/etc/cron.d/schedls-<name>` drop-in is only managed when its begin/end markers
+match the file name; otherwise it is listed as unmanaged and left alone.
 
 ### Partial operations
 
 systemd creation writes both units, reloads the manager, and enables the timer;
 if a later step fails, or the operation is interrupted, the previous state is
 restored and a partially enabled timer is disabled again. Cron installs are
-validated first and restored from the previous crontab text on failure.
+validated first and restored from the previous crontab text on failure. System
+cron drop-ins are written atomically and a failed multi-file apply restores or
+removes whatever it had already written.
 
 ### Supply chain
 
@@ -105,6 +113,6 @@ in CI.
 
 ## Availability, privacy
 
-`0.1.0` requires `systemd-analyze` to create or validate calendar expressions
+`0.2.0` requires `systemd-analyze` to create or validate calendar expressions
 and refuses the operation if it is unavailable. `schedls` makes no network
 requests and collects no telemetry.

@@ -99,6 +99,7 @@ class CronDetails:
     raw_line: str | None = None
     line: int | None = None
     environment: tuple[tuple[str, str], ...] = ()
+    user: str | None = None
 
 
 @dataclass(frozen=True)
@@ -134,6 +135,7 @@ class JobSpec:
     command: Command
     calendar: tuple[str, ...] = ()
     cron_expression: str | None = None
+    run_as: str | None = None
     persistent: bool = False
     jitter: str | None = None
     accuracy: str | None = None

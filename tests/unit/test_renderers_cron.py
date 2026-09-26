@@ -125,5 +125,38 @@ def test_managed_block() -> None:
     assert block == ("# schedls:begin name=backup\n0 2 * * * /bin/true\n# schedls:end name=backup\n")
 
 
+def test_render_system_line() -> None:
+    line = renderer.render_system_line("0 2 * * *", Command(argv=("/bin/echo", "100%")), "www-data")
+    assert line == "0 2 * * * www-data /bin/echo 100\\%"
+
+
+def test_render_system_file_has_marker() -> None:
+    content = renderer.render_system_file("backup", ["0 2 * * * root /bin/true"])
+    assert content.startswith("# Managed by schedls\n# schedls:begin name=backup\n")
+    assert content.endswith("# schedls:end name=backup\n")
+
+
+@pytest.mark.parametrize("name", ["backup", "my-job", "job_1"])
+def test_system_name_accepts(name: str) -> None:
+    assert renderer.validate_system_name(name) == name
+
+
+@pytest.mark.parametrize("name", ["my.job", ".hidden", "-leading", "with space", ""])
+def test_system_name_rejects(name: str) -> None:
+    with pytest.raises(InvalidScheduleError):
+        renderer.validate_system_name(name)
+
+
+@pytest.mark.parametrize("user", ["root", "www-data", "nginx", "user.name", "_svc"])
+def test_run_as_accepts(user: str) -> None:
+    assert renderer.validate_run_as(user) == user
+
+
+@pytest.mark.parametrize("user", ["", "-root", "a b", "a;b", "a$b", "x" * 33])
+def test_run_as_rejects(user: str) -> None:
+    with pytest.raises(InvalidScheduleError):
+        renderer.validate_run_as(user)
+
+
 def test_shlex_reference() -> None:
     assert shlex.quote("a b") == "'a b'"

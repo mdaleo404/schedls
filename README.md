@@ -65,6 +65,12 @@ Create a cron job:
 $ schedls new cleanup --cron --cron-expr '0 4 * * 0' -- /usr/local/bin/cleanup
 ```
 
+Create a system cron drop-in as root (runs as `root` unless `--run-as` is given):
+
+```console
+$ sudo schedls new updates --cron --system --daily 03:00 -- /usr/local/bin/updates
+```
+
 Prefer to be guided? Add `-i`/`--interactive` to `new` or `edit` and any
 omitted field is prompted for. Flags you do pass become pre-filled defaults:
 
@@ -73,9 +79,12 @@ $ schedls new backup -i
 $ schedls edit backup -i
 ```
 
-Interactive mode is line-based (no external editor or pager), requires a
-terminal, and cannot be combined with `--json`. The collected values are shown
-in the usual preview and still require confirmation before anything is written.
+For `new`, the wizard asks for the scope (user or system) unless `--user` or
+`--system` was given; a system cron job then asks which user it should run as
+(default `root`). Interactive mode is line-based (no external editor or pager),
+requires a terminal, and cannot be combined with `--json`. The collected values
+are shown in the usual preview and still require confirmation before anything
+is written.
 
 Inspect, change, disable, remove:
 

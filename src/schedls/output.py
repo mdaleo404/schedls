@@ -164,6 +164,7 @@ def job_to_dict(job: ScheduledJob) -> dict[str, Any]:
             "shell": job.cron.shell,
             "mailto": job.cron.mailto,
             "line": job.cron.line,
+            "user": job.cron.user,
             "environment": [list(item) for item in job.cron.environment],
         }
     return data

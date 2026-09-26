@@ -13,7 +13,7 @@ import shlex
 
 from ..errors import InvalidScheduleError, SafetyRefusalError
 from ..models import Command
-from ..security import has_unsafe_control_characters
+from ..security import MANAGED_COMMENT, has_unsafe_control_characters
 
 BLOCK_BEGIN = "# schedls:begin name={name}{extra}"
 BLOCK_END = "# schedls:end name={name}"
@@ -31,6 +31,8 @@ _NICKNAMES = {
     "@hourly",
 }
 _RANGE_RE = re.compile(r"^[0-9]{1,2}-[0-9]{1,2}$")
+_SYSTEM_NAME_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z")
+_USER_RE = re.compile(r"\A[A-Za-z0-9_][A-Za-z0-9_.-]{0,31}\Z")
 
 
 def escape_percent(text: str) -> str:
@@ -122,6 +124,38 @@ def render_line(expression: str, command: Command) -> str:
     return f"{validate_expression(expression)} {render_command(command)}"
 
 
+def validate_run_as(user: str) -> str:
+    if not _USER_RE.match(user):
+        raise InvalidScheduleError(
+            f"invalid run-as user: {user!r}",
+            hint="User names start alphanumeric or '_', then letters, digits, '_', '.' or '-'.",
+        )
+    return user
+
+
+def validate_system_name(name: str) -> str:
+    """Validate a name for an ``/etc/cron.d/schedls-<name>`` drop-in.
+
+    Cron ignores files whose names contain a period, so this is stricter than
+    the general schedule-name grammar.
+    """
+    if not _SYSTEM_NAME_RE.match(name):
+        raise InvalidScheduleError(
+            f"invalid system schedule name: {name!r}",
+            hint="System cron names allow letters, digits, '_' and '-' only.",
+        )
+    return name
+
+
+def render_system_line(expression: str, command: Command, user: str) -> str:
+    return f"{validate_expression(expression)} {validate_run_as(user)} {render_command(command)}"
+
+
 def render_block(name: str, lines: list[str], *, extra: str = "") -> str:
     body = [BLOCK_BEGIN.format(name=name, extra=extra), *lines, BLOCK_END.format(name=name)]
     return "\n".join(body) + "\n"
+
+
+def render_system_file(name: str, lines: list[str]) -> str:
+    """Render a complete schedls-owned drop-in for ``/etc/cron.d``."""
+    return f"{MANAGED_COMMENT}\n{render_block(name, lines)}"
