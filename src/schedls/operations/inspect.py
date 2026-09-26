@@ -139,6 +139,10 @@ def render_show(output: Output, job: ScheduledJob) -> None:
     if job.cron is not None:
         output.line()
         output.key_values([("Source", job.source.detail)])
+        if job.source.path:
+            output.key_values([("File", job.source.path)])
+        if job.cron.user:
+            output.key_values([("Run as", job.cron.user)])
         if job.cron.shell:
             output.key_values([("SHELL", job.cron.shell)])
         if job.cron.mailto:

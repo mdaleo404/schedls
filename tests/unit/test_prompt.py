@@ -150,12 +150,13 @@ def test_eof_raises_confirmation_required() -> None:
 def test_wizard_new_systemd(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("sys.stdin", FakeStdin(isatty=True))
     args = build_parser().parse_args(["new", "-i"])
-    answers = ["backup", "", "n", "/usr/local/bin/backup /srv/data", "", "02:00", "n"]
+    answers = ["backup", "", "", "n", "/usr/local/bin/backup /srv/data", "", "02:00", "n"]
     prompter, _ = make_prompter(answers)
     args, tail = _wizard_new(args, [], prompter)
     spec = _spec_for_new(args, tail)
     assert spec.name == "backup"
     assert spec.backend is Backend.SYSTEMD
+    assert spec.scope is Scope.USER
     assert spec.calendar == ("*-*-* 02:00:00",)
     assert spec.command.argv == ("/usr/local/bin/backup", "/srv/data")
 
@@ -163,22 +164,89 @@ def test_wizard_new_systemd(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_wizard_new_cron(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("sys.stdin", FakeStdin(isatty=True))
     args = build_parser().parse_args(["new", "-i"])
-    answers = ["cleanup", "2", "n", "/usr/local/bin/cleanup", "", "04:00"]
+    answers = ["cleanup", "2", "", "n", "/usr/local/bin/cleanup", "", "04:00"]
     prompter, _ = make_prompter(answers)
     args, tail = _wizard_new(args, [], prompter)
     spec = _spec_for_new(args, tail)
     assert spec.backend is Backend.CRON
+    assert spec.scope is Scope.USER
     assert spec.cron_expression == "0 4 * * *"
+    assert spec.run_as is None
 
 
 def test_wizard_new_skips_provided_fields(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("sys.stdin", FakeStdin(isatty=True))
-    args = build_parser().parse_args(["new", "backup", "-i", "--timer", "--daily", "02:00"])
+    args = build_parser().parse_args(["new", "backup", "-i", "--timer", "--daily", "02:00", "--user"])
     prompter, fake = make_prompter(["n"])
     args, tail = _wizard_new(args, ["/bin/true"], prompter)
     spec = _spec_for_new(args, tail)
     assert spec.calendar == ("*-*-* 02:00:00",)
     assert fake.prompts == ["Set advanced timer options? [y/N] "]
+
+
+def test_wizard_new_scope_prompt_defaults_to_user(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("sys.stdin", FakeStdin(isatty=True))
+    args = build_parser().parse_args(["new", "cleanup", "-i", "--cron", "--daily", "04:00"])
+    prompter, fake = make_prompter(["", "n", "/usr/local/bin/cleanup"])
+    args, tail = _wizard_new(args, [], prompter)
+    spec = _spec_for_new(args, tail)
+    assert spec.scope is Scope.USER
+    assert spec.run_as is None
+    assert any(prompt.startswith("Scope:") for prompt in fake.prompts)
+    assert not any(prompt.startswith("Run as user") for prompt in fake.prompts)
+
+
+def test_wizard_new_system_cron_prompts_run_as(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("sys.stdin", FakeStdin(isatty=True))
+    args = build_parser().parse_args(["new", "report", "-i", "--cron", "--daily", "04:00"])
+    prompter, _ = make_prompter(["2", "www-data", "n", "/usr/local/bin/report"])
+    args, tail = _wizard_new(args, [], prompter)
+    spec = _spec_for_new(args, tail)
+    assert spec.scope is Scope.SYSTEM
+    assert spec.run_as == "www-data"
+
+
+def test_wizard_new_system_cron_run_as_defaults_to_root(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("sys.stdin", FakeStdin(isatty=True))
+    args = build_parser().parse_args(["new", "report", "-i", "--cron", "--daily", "04:00"])
+    prompter, _ = make_prompter(["2", "", "n", "/usr/local/bin/report"])
+    args, tail = _wizard_new(args, [], prompter)
+    spec = _spec_for_new(args, tail)
+    assert spec.scope is Scope.SYSTEM
+    assert spec.run_as == "root"
+
+
+def test_wizard_new_system_cron_run_as_reprompts(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("sys.stdin", FakeStdin(isatty=True))
+    args = build_parser().parse_args(["new", "report", "-i", "--cron", "--daily", "04:00"])
+    prompter, fake = make_prompter(["2", "bad user", "www-data", "n", "/usr/local/bin/report"])
+    args, tail = _wizard_new(args, [], prompter)
+    spec = _spec_for_new(args, tail)
+    assert spec.run_as == "www-data"
+    assert fake.prompts.count("Run as user [root]: ") == 2
+
+
+def test_wizard_new_provided_scope_and_run_as_are_not_reasked(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("sys.stdin", FakeStdin(isatty=True))
+    args = build_parser().parse_args(
+        ["new", "report", "-i", "--cron", "--system", "--run-as", "root", "--daily", "04:00"]
+    )
+    prompter, fake = make_prompter(["n", "/usr/local/bin/report"])
+    args, tail = _wizard_new(args, [], prompter)
+    spec = _spec_for_new(args, tail)
+    assert spec.scope is Scope.SYSTEM
+    assert spec.run_as == "root"
+    assert all("Scope:" not in prompt and "Run as user" not in prompt for prompt in fake.prompts)
+
+
+def test_wizard_new_systemd_scope_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("sys.stdin", FakeStdin(isatty=True))
+    args = build_parser().parse_args(["new", "backup", "-i", "--timer", "--daily", "02:00"])
+    prompter, _ = make_prompter(["2", "n", "/usr/local/bin/backup", "n"])
+    args, tail = _wizard_new(args, [], prompter)
+    spec = _spec_for_new(args, tail)
+    assert spec.scope is Scope.SYSTEM
+    assert spec.calendar == ("*-*-* 02:00:00",)
 
 
 def test_wizard_edit_changes_schedule(monkeypatch: pytest.MonkeyPatch) -> None:

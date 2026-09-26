@@ -82,9 +82,9 @@ Plan
 ```
 
 The caller previews the plan, obtains confirmation, then calls `apply`. Plans
-snapshot existing content so a failed step can be rolled back. Cron plans also
-record the previous crontab text and re-check it at apply time to detect
-concurrent edits.
+snapshot existing content so a failed step can be rolled back. Cron plans
+record the previous crontab text or drop-in content and re-check it at apply
+time to detect concurrent edits.
 
 ## Exit codes
 
@@ -124,4 +124,7 @@ The schema version is `1`.
 ```
 
 Rules: no ANSI sequences; ISO 8601 timestamps with explicit offsets; stable
-field names; missing data is `null`, never invented.
+field names; missing data is `null`, never invented. Jobs whose `backend` is
+`cron` additionally carry a `cron` object (`expression`, `shell`, `mailto`,
+`line`, `user`, `environment`), where `user` is the run-as account for system
+entries and `null` for the current user's crontab.

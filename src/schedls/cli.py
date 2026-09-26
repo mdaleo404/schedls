@@ -172,6 +172,11 @@ def _add_schedule_options(parser: argparse.ArgumentParser, *, creation: bool) ->
 
 def _add_creation_options(parser: argparse.ArgumentParser) -> None:
     _add_schedule_options(parser, creation=True)
+    parser.add_argument(
+        "--run-as",
+        metavar="USER",
+        help="run a system cron job as USER (default: root)",
+    )
     _add_mutation_flags(parser)
 
 
@@ -496,6 +501,8 @@ def _spec_for_new(args: argparse.Namespace, tail: list[str]) -> JobSpec:
     if args.timer:
         if args.cron_expr:
             raise UsageError("--cron-expr is a cron option; use --calendar for systemd timers.")
+        if args.run_as:
+            raise UsageError("--run-as is a system cron option.")
         calendar = _calendar_from_args(args)
         if not calendar:
             raise UsageError("no schedule given.", hint="Use --calendar or a convenience flag such as --daily.")
@@ -517,14 +524,20 @@ def _spec_for_new(args: argparse.Namespace, tail: list[str]) -> JobSpec:
         raise UsageError("--jitter/--accuracy/--persistent/--working-directory are systemd options.")
     if args.env:
         raise UsageError("--env is a systemd option; cron environment variables are not supported yet.")
-    if _resolve_scope(args) is Scope.SYSTEM:
-        raise UsageError(
-            "--system is not supported for cron jobs.",
-            hint="Cron jobs are always created for the current user.",
-        )
     expression = _cron_expression_from_args(args)
     if not expression:
         raise UsageError("no schedule given.", hint="Use --cron-expr or a convenience flag such as --daily.")
+    if scope is Scope.SYSTEM:
+        return JobSpec(
+            name=args.name,
+            backend=Backend.CRON,
+            scope=Scope.SYSTEM,
+            command=command,
+            cron_expression=expression,
+            run_as=args.run_as or "root",
+        )
+    if args.run_as:
+        raise UsageError("--run-as requires --system for cron jobs.", hint="Cron jobs run as the current user.")
     return JobSpec(
         name=args.name,
         backend=Backend.CRON,
@@ -607,6 +620,22 @@ def _wizard_backend(args: argparse.Namespace, prompter: Prompter) -> Backend:
     return Backend.CRON
 
 
+def _wizard_scope(args: argparse.Namespace, backend: Backend, prompter: Prompter) -> Scope:
+    provided = getattr(args, "scope_group", None) or getattr(args, "scope_filter", None)
+    if provided is not None:
+        return Scope(provided)
+    if backend is Backend.SYSTEMD:
+        options = [("user", "user timer"), ("system", "system timer (root)")]
+    else:
+        options = [
+            ("user", "current user's crontab"),
+            ("system", "system drop-in /etc/cron.d (root)"),
+        ]
+    selected = prompter.choice("Scope:", options, default="user")
+    args.scope_group = Scope.SYSTEM if selected == "system" else Scope.USER
+    return Scope(args.scope_group)
+
+
 def _wizard_command(args: argparse.Namespace, tail: list[str], prompter: Prompter) -> list[str]:
     if args.shell or tail:
         return tail
@@ -622,6 +651,9 @@ def _wizard_new(args: argparse.Namespace, tail: list[str], prompter: Prompter) -
     if args.name is None:
         args.name = prompter.text("Schedule name", validator=validate_name)
     backend = _wizard_backend(args, prompter)
+    scope = _wizard_scope(args, backend, prompter)
+    if backend is Backend.CRON and scope is Scope.SYSTEM and args.run_as is None:
+        args.run_as = prompter.text("Run as user", default="root", validator=cron_renderer.validate_run_as)
     tail = _wizard_command(args, tail, prompter)
     if not _has_schedule(args):
         _apply_schedule(args, prompter.schedule(backend))

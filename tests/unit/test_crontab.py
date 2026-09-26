@@ -93,3 +93,48 @@ def test_empty_crontab() -> None:
     updated = document.with_block("x", ["0 0 * * * /bin/true"])
     assert updated.endswith("\n")
     assert "name=x" in updated
+
+
+SYSTEM_SAMPLE = (
+    "SHELL=/bin/sh\n"
+    "PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin\n"
+    "\n"
+    "# system jobs\n"
+    "17 * * * * root cd / && run-parts --report /etc/cron.hourly\n"
+    "@daily www-data /usr/local/bin/report\n"
+    "\n"
+    "# schedls:begin name=cleanup\n"
+    "30 3 * * 0 root /usr/local/bin/cleanup\n"
+    "# schedls:end name=cleanup\n"
+)
+
+
+def test_system_crontab_parses_user_field() -> None:
+    document = CrontabDocument(SYSTEM_SAMPLE, system=True)
+    jobs = [entry for entry in document.entries if entry.kind == "job"]
+    assert jobs[0].expression == "17 * * * *"
+    assert jobs[0].user == "root"
+    assert jobs[0].command == "cd / && run-parts --report /etc/cron.hourly"
+    assert jobs[1].expression == "@daily"
+    assert jobs[1].user == "www-data"
+    assert jobs[1].command == "/usr/local/bin/report"
+
+
+def test_system_crontab_detects_managed_block() -> None:
+    document = CrontabDocument(SYSTEM_SAMPLE, system=True)
+    block = document.find_block("cleanup")
+    assert block is not None
+    assert block.job_lines[0].user == "root"
+    assert document.render() == SYSTEM_SAMPLE
+
+
+def test_user_crontab_still_parses_five_fields() -> None:
+    document = CrontabDocument("15 7 * * * ~/bin/foo\n", system=False)
+    assert document.entries[0].expression == "15 7 * * *"
+    assert document.entries[0].user is None
+    assert document.entries[0].command == "~/bin/foo"
+
+
+def test_system_entry_without_user_is_not_a_job() -> None:
+    document = CrontabDocument("15 7 * * * ~/bin/foo\n", system=True)
+    assert document.entries[0].kind == "comment"

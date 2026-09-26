@@ -1,6 +1,6 @@
 [project]
 name = "schedls"
-version = "0.1.0"
+version = "0.2.0"
 description = "Inspect and manage Linux scheduled jobs"
 authors = [
     { name = "Marco D'Aleo", email = "marco@marcodaleo.com" }

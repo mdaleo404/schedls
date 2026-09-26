@@ -102,8 +102,27 @@ def test_spec_for_new_rejects_cron_expr_for_timer() -> None:
         _spec_for_new(args, ["/bin/true"])
 
 
-def test_spec_for_new_rejects_system_scope_for_cron() -> None:
+def test_spec_for_new_system_cron() -> None:
     args = build_parser().parse_args(["new", "x", "--cron", "--daily", "02:00", "--system"])
+    spec = _spec_for_new(args, ["/bin/true"])
+    assert spec.scope is Scope.SYSTEM
+    assert spec.run_as == "root"
+
+
+def test_spec_for_new_system_cron_run_as() -> None:
+    args = build_parser().parse_args(["new", "x", "--cron", "--daily", "02:00", "--system", "--run-as", "www-data"])
+    spec = _spec_for_new(args, ["/bin/true"])
+    assert spec.run_as == "www-data"
+
+
+def test_spec_for_new_rejects_run_as_for_user_cron() -> None:
+    args = build_parser().parse_args(["new", "x", "--cron", "--daily", "02:00", "--run-as", "www-data"])
+    with pytest.raises(UsageError):
+        _spec_for_new(args, ["/bin/true"])
+
+
+def test_spec_for_new_rejects_run_as_for_timer() -> None:
+    args = build_parser().parse_args(["new", "x", "--timer", "--daily", "02:00", "--run-as", "www-data"])
     with pytest.raises(UsageError):
         _spec_for_new(args, ["/bin/true"])
 

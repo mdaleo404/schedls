@@ -21,7 +21,7 @@ def run_doctor(
 ) -> None:
     systemd = _systemd_report(runner, systemd_backend)
     cron = _cron_report(runner, cron_backend)
-    usable = systemd["available"] or cron["crontab_available"]
+    usable = systemd["available"] or cron["crontab_available"] or cron["file_sources"]
 
     if output.json_mode:
         output.emit_json(
@@ -54,6 +54,7 @@ def run_doctor(
     output.key_values(
         [
             ("crontab", _yes_no(cron["crontab_available"])),
+            ("system cron files", _yes_no(cron["file_sources"])),
             ("implementation", cron["implementation"] or "unknown"),
             ("current user allowed", _yes_no(cron["user_allowed"])),
             ("syntax validation", _yes_no(cron["validation"])),
@@ -80,18 +81,24 @@ def _systemd_report(runner: CommandRunner, systemd_backend: SystemdBackend) -> d
 
 
 def _cron_report(runner: CommandRunner, cron_backend: CronBackend) -> dict[str, Any]:
+    crontab_available = cron_backend.crontab_available()
+    file_sources = cron_backend.file_sources_available()
     if not cron_backend.available():
         return {
             "crontab_available": False,
+            "file_sources": file_sources,
             "implementation": None,
             "user_allowed": False,
             "validation": False,
         }
     info = cron_backend.capabilities_info()
-    completed = runner.run(["crontab", "-l"], env_policy="identity", check=False)
-    allowed = completed.returncode == 0 or "no crontab" in (completed.stderr + completed.stdout).lower()
+    allowed = False
+    if crontab_available:
+        completed = runner.run(["crontab", "-l"], env_policy="identity", check=False)
+        allowed = completed.returncode == 0 or "no crontab" in (completed.stderr + completed.stdout).lower()
     return {
-        "crontab_available": True,
+        "crontab_available": crontab_available,
+        "file_sources": file_sources,
         "implementation": info.implementation,
         "user_allowed": allowed,
         "validation": info.supports_validation,
