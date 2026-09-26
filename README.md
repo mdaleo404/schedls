@@ -28,6 +28,47 @@ ordinary systemd unit, and a cron job is an ordinary crontab entry.
 
 ## Install
 
+### From the package repository
+
+Native `.deb` and `.rpm` packages are published at
+[repo.sysmd.uk/schedls](https://repo.sysmd.uk/schedls/).
+
+#### Debian / Ubuntu
+
+```bash
+sudo mkdir -p /usr/share/keyrings
+curl -fsSL https://repo.sysmd.uk/schedls/mdaleo404.gpg | sudo gpg --dearmor -o /usr/share/keyrings/schedls.gpg
+
+echo "deb [arch=amd64 signed-by=/usr/share/keyrings/schedls.gpg] https://repo.sysmd.uk/schedls/debian stable main" | sudo tee /etc/apt/sources.list.d/schedls.list
+
+sudo apt update
+sudo apt install schedls
+```
+
+The signing key fingerprint is
+`0032C71FA6A11EF9567D4434C5C06BD4603C28B1`.
+
+#### Fedora / RHEL
+
+```bash
+sudo rpm --import https://repo.sysmd.uk/schedls/mdaleo404.gpg
+
+sudo tee /etc/yum.repos.d/schedls.repo > /dev/null << 'EOF'
+[schedls]
+name=schedls Repository
+baseurl=https://repo.sysmd.uk/schedls/rpm/$basearch
+enabled=1
+gpgcheck=1
+repo_gpgcheck=1
+gpgkey=https://repo.sysmd.uk/schedls/mdaleo404.gpg
+EOF
+
+sudo dnf upgrade --refresh
+sudo dnf install schedls
+```
+
+### From PyPI
+
 ```console
 $ pipx install schedls
 # or
