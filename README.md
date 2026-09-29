@@ -185,3 +185,9 @@ scanning uses [Bandit](https://bandit.readthedocs.io/); both run through
 YAML and TOML checks. CI runs the same hooks on every push and pull request,
 followed by a strict type check, the test matrix (Python 3.11–3.14) and a package
 build. A scheduled workflow builds an SBOM and scans it with Grype.
+
+## Support
+
+If you find **schedls** useful, consider supporting its development:
+
+[![Support me on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/mdaleo404)
