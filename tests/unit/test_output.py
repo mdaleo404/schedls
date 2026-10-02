@@ -96,9 +96,18 @@ def test_key_values_colour_labels_but_not_values() -> None:
     stream = io.StringIO()
     output = Output(color="always", stdout=stream)
 
-    output.key_values([("S", "active"), ("Status", "waiting")])
+    output.key_values([("S", "active"), ("Status", "waiting")], width=8)
 
-    assert stream.getvalue() == ("\033[1m\033[36mS     \033[0m  active\n\033[1m\033[36mStatus\033[0m  waiting\n")
+    assert stream.getvalue() == ("\033[1m\033[36mS       \033[0m  active\n\033[1m\033[36mStatus  \033[0m  waiting\n")
+
+
+def test_key_values_honours_requested_width() -> None:
+    stream = io.StringIO()
+    output = Output(color="never", stdout=stream)
+
+    output.key_values([("Key", "value")], width=6)
+
+    assert stream.getvalue() == "Key     value\n"
 
 
 def test_key_values_honours_no_color(monkeypatch) -> None:

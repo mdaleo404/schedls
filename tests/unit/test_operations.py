@@ -7,6 +7,7 @@ from dataclasses import replace
 
 import pytest
 
+from schedls import __version__
 from schedls.backends.base import CommandPlan, FileChange, MutationResult, Plan
 from schedls.backends.cron import CronBackend
 from schedls.backends.systemd import SystemdBackend
@@ -73,6 +74,24 @@ def test_render_show() -> None:
     assert "systemd user timer" in text
 
 
+def test_render_show_aligns_systemd_details() -> None:
+    job = replace(
+        _job(),
+        systemd=SystemdDetails(
+            timer_path="/var/lib/schedls/backup.timer",
+            service_path="/var/lib/schedls/backup.service",
+            persistent=True,
+        ),
+    )
+    output, stream = _output()
+
+    inspect_ops.render_show(output, job)
+
+    backend = next(line for line in stream.getvalue().splitlines() if line.startswith("Backend"))
+    timer = next(line for line in stream.getvalue().splitlines() if line.startswith("Timer"))
+    assert backend.index("systemd") == timer.index("/var/lib/schedls/backup.timer")
+
+
 def test_render_show_explains_unavailable_cron_history() -> None:
     job = ScheduledJob(
         name="cron-1",
@@ -94,6 +113,9 @@ def test_render_show_explains_unavailable_cron_history() -> None:
     assert "unavailable (cron does not provide per-job history)" in previous
     assert "\n\nBackend" not in text
     assert "\n\nSource" in text
+    status = next(line for line in text.splitlines() if line.startswith("Status"))
+    source = next(line for line in text.splitlines() if line.startswith("Source"))
+    assert status.index("active") == source.index("current user's crontab")
 
 
 def test_render_show_keeps_cron_next_run_null_in_json() -> None:
@@ -203,6 +225,10 @@ def test_doctor_human() -> None:
     text = stream.getvalue()
     assert "Cronie" in text
     assert "usable" in text
+    version = next(line for line in text.splitlines() if line.startswith("version"))
+    available = next(line for line in text.splitlines() if line.startswith("available"))
+    crontab = next(line for line in text.splitlines() if line.startswith("crontab"))
+    assert version.index(__version__) == available.index("yes") == crontab.index("yes")
 
 
 def test_doctor_json() -> None:

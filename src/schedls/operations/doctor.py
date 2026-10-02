@@ -35,31 +35,32 @@ def run_doctor(
         )
         return
 
+    schedls_details = [("version", __version__), ("Python", platform.python_version())]
+    systemd_details = [
+        ("available", _yes_no(systemd["available"])),
+        ("system manager", _reachable(systemd["system_manager"])),
+        ("user manager", _reachable(systemd["user_manager"])),
+        ("systemd-analyze", _yes_no(systemd["analyze"])),
+        ("calendar validation", _yes_no(systemd["calendar_validation"])),
+        ("user lingering", _lingering(systemd["user_lingering"])),
+    ]
+    cron_details = [
+        ("crontab", _yes_no(cron["crontab_available"])),
+        ("system cron files", _yes_no(cron["file_sources"])),
+        ("implementation", cron["implementation"] or "unknown"),
+        ("current user allowed", _yes_no(cron["user_allowed"])),
+        ("syntax validation", _yes_no(cron["validation"])),
+    ]
+    width = max(len(key) for key, _ in [*schedls_details, *systemd_details, *cron_details])
+
     output.heading("schedls")
-    output.key_values([("version", __version__), ("Python", platform.python_version())])
+    output.key_values(schedls_details, width=width)
     output.line()
     output.heading("systemd")
-    output.key_values(
-        [
-            ("available", _yes_no(systemd["available"])),
-            ("system manager", _reachable(systemd["system_manager"])),
-            ("user manager", _reachable(systemd["user_manager"])),
-            ("systemd-analyze", _yes_no(systemd["analyze"])),
-            ("calendar validation", _yes_no(systemd["calendar_validation"])),
-            ("user lingering", _lingering(systemd["user_lingering"])),
-        ]
-    )
+    output.key_values(systemd_details, width=width)
     output.line()
     output.heading("cron")
-    output.key_values(
-        [
-            ("crontab", _yes_no(cron["crontab_available"])),
-            ("system cron files", _yes_no(cron["file_sources"])),
-            ("implementation", cron["implementation"] or "unknown"),
-            ("current user allowed", _yes_no(cron["user_allowed"])),
-            ("syntax validation", _yes_no(cron["validation"])),
-        ]
-    )
+    output.key_values(cron_details, width=width)
     output.line()
     output.heading("Result")
     output.line(f"  {'usable' if usable else 'unusable'}")

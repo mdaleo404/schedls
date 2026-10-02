@@ -116,7 +116,6 @@ def render_show(output: Output, job: ScheduledJob) -> None:
     core.extend([("Previous", previous), ("Command", job.command.display() or "unknown")])
     if job.last_result:
         core.append(("Result", job.last_result))
-    output.key_values(core)
 
     details: list[tuple[str, str]] = []
     if job.systemd is not None:
@@ -143,9 +142,11 @@ def render_show(output: Output, job: ScheduledJob) -> None:
             details.append(("SHELL", job.cron.shell))
         if job.cron.mailto:
             details.append(("MAILTO", job.cron.mailto))
+    width = max(len(key) for key, _ in [*core, *details])
+    output.key_values(core, width=width)
     if details:
         output.line()
-        output.key_values(details)
+        output.key_values(details, width=width)
     for warning in job.warnings:
         output.line()
         output.diagnostic(f"Warning: {warning}")

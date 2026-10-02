@@ -99,10 +99,10 @@ class Output:
         for row in materialized:
             self.line("  ".join(cell.ljust(widths[i]) for i, cell in enumerate(row)).rstrip())
 
-    def key_values(self, pairs: Sequence[tuple[str, str]]) -> None:
+    def key_values(self, pairs: Sequence[tuple[str, str]], *, width: int | None = None) -> None:
         if not pairs:
             return
-        width = max(len(key) for key, _ in pairs)
+        width = max(width if width is not None else 0, *(len(key) for key, _ in pairs))
         for key, value in pairs:
             label = self.style(key.ljust(width), "bold", "cyan")
             self.line(f"{label}  {value}".rstrip())
