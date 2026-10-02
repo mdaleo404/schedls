@@ -33,6 +33,19 @@ Global options may appear before the command. `--user`/`--system`,
 `--json` is intended for scripts. It prints one document on stdout and sends
 diagnostics to stderr; no ANSI escapes are emitted.
 
+## Bash completion
+
+Completion is opt-in. After installing schedls, enable it for the current Bash
+session with:
+
+```bash
+eval "$(register-python-argcomplete schedls)"
+```
+
+Add the command to your shell profile to enable it in future sessions. It
+completes schedls subcommands, options, and option choices without discovering
+schedules.
+
 ## Commands
 
 ### `list`

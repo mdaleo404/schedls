@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+
 import pytest
 
 from schedls.cli import _parse_environment, _spec_for_new, build_parser, main, split_command
@@ -14,6 +18,49 @@ def test_split_command() -> None:
     head, tail = split_command(["show", "x"])
     assert head == ["show", "x"]
     assert tail == []
+
+
+def test_main_activates_argcomplete(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = []
+    monkeypatch.setattr("schedls.cli.argcomplete.autocomplete", lambda parser, **kwargs: calls.append((parser, kwargs)))
+
+    with pytest.raises(SystemExit):
+        main(["--version"])
+
+    assert len(calls) == 1
+    assert calls[0][1]["default_completer"].__class__.__name__ == "SuppressCompleter"
+
+
+def _complete(tmp_path, line: str) -> list[str]:
+    completions = tmp_path / "completions"
+    environment = {
+        **os.environ,
+        "_ARGCOMPLETE": "1",
+        "_ARGCOMPLETE_STDOUT_FILENAME": str(completions),
+        "COMP_LINE": line,
+        "COMP_POINT": str(len(line)),
+        "COMP_WORDBREAKS": " \t\n\"'><=;|&(:,",
+        "PATH": "",
+    }
+
+    completed = subprocess.run(
+        [sys.executable, "-m", "schedls"],
+        check=False,
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0
+    return [item.strip() for item in completions.read_text().split("\v") if item.strip()]
+
+
+def test_argcomplete_only_completes_static_parser_info(tmp_path) -> None:
+    (tmp_path / "candidate").touch()
+
+    assert "show" in _complete(tmp_path, "schedls sh")
+    assert _complete(tmp_path, "schedls show c") == []
 
 
 def test_edit_command_dest_does_not_shadow_subcommand() -> None:

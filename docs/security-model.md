@@ -108,8 +108,8 @@ removes whatever it had already written.
 
 ### Supply chain
 
-Runtime dependencies are zero. Development dependencies are locked and audited
-in CI.
+The sole runtime dependency is `argcomplete`, which provides opt-in shell
+completion. Development dependencies are locked and audited in CI.
 
 ## Availability, privacy
 

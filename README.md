@@ -75,7 +75,17 @@ $ pipx install schedls
 $ pip install --user schedls
 ```
 
-`python -m schedls` works too. Zero runtime dependencies; Python 3.11+.
+`python -m schedls` works too. Python 3.11+.
+
+### Bash completion
+
+Enable opt-in completion for the current Bash session:
+
+```bash
+eval "$(register-python-argcomplete schedls)"
+```
+
+Add that line to your shell profile to enable it in future sessions.
 
 ## Examples
 

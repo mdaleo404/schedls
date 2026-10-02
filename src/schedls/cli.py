@@ -7,6 +7,9 @@ import re
 import sys
 from dataclasses import dataclass
 
+import argcomplete
+from argcomplete.completers import SuppressCompleter
+
 from . import __version__, convenience
 from .backends.base import SchedulerBackend
 from .backends.cron import CronBackend
@@ -219,6 +222,7 @@ def main(argv: list[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     head, tail = split_command(arguments)
     parser = build_parser()
+    argcomplete.autocomplete(parser, default_completer=SuppressCompleter())
     args = parser.parse_args(head)
 
     output = Output(json_mode=args.json_mode, color=args.color, utc=args.utc)
