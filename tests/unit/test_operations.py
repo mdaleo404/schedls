@@ -89,7 +89,11 @@ def test_render_show_explains_unavailable_cron_history() -> None:
 
     inspect_ops.render_show(output, job)
 
-    assert "Previous  unavailable (cron does not provide per-job history)" in stream.getvalue()
+    text = stream.getvalue()
+    previous = next(line for line in text.splitlines() if line.startswith("Previous"))
+    assert "unavailable (cron does not provide per-job history)" in previous
+    assert "\n\nBackend" not in text
+    assert "\n\nSource" in text
 
 
 def test_render_show_keeps_cron_next_run_null_in_json() -> None:

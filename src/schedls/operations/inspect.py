@@ -101,56 +101,51 @@ def render_show(output: Output, job: ScheduledJob) -> None:
         return
     output.heading(job.name)
     output.line()
-    output.key_values([("Status", job_status(job))])
-    output.line()
-    output.key_values([("Backend", _backend_label(job))])
-    output.line()
-    output.key_values([("Managed by schedls", "yes" if job.managed else "no")])
-    output.line()
-    output.key_values([("Schedule", job.schedule_text())])
+    core = [
+        ("Status", job_status(job)),
+        ("Backend", _backend_label(job)),
+        ("Managed by schedls", "yes" if job.managed else "no"),
+        ("Schedule", job.schedule_text()),
+    ]
     if job.schedule.expressions:
         for expression in job.schedule.expressions:
-            output.key_values([("OnCalendar", expression)])
-    output.line()
+            core.append(("OnCalendar", expression))
     next_run = _next_run(job)
-    output.key_values([("Next", output.job_datetime(next_run) or _next_unavailable(job))])
-    output.line()
+    core.append(("Next", output.job_datetime(next_run) or _next_unavailable(job)))
     previous = output.job_datetime(job.last_run) or _previous_unavailable(job)
+    core.extend([("Previous", previous), ("Command", job.command.display() or "unknown")])
     if job.last_result:
-        previous = f"{previous}\nresult: {job.last_result}"
-    output.key_values([("Previous", previous)])
-    output.line()
-    output.key_values([("Command", job.command.display() or "unknown")])
+        core.append(("Result", job.last_result))
+    output.key_values(core)
+
+    details: list[tuple[str, str]] = []
     if job.systemd is not None:
         if job.systemd.timer_path:
-            output.line()
-            output.key_values([("Timer", job.systemd.timer_path)])
+            details.append(("Timer", job.systemd.timer_path))
         if job.systemd.service_path:
-            output.key_values([("Service", job.systemd.service_path)])
-        extras = []
-        extras.append(("Persistent", "yes" if job.systemd.persistent else "no"))
+            details.append(("Service", job.systemd.service_path))
+        details.append(("Persistent", "yes" if job.systemd.persistent else "no"))
         if job.systemd.jitter:
-            extras.append(("Randomized delay", job.systemd.jitter))
+            details.append(("Randomized delay", job.systemd.jitter))
         if job.systemd.accuracy:
-            extras.append(("Accuracy", job.systemd.accuracy))
+            details.append(("Accuracy", job.systemd.accuracy))
         if job.systemd.working_directory:
-            extras.append(("Working directory", job.systemd.working_directory))
+            details.append(("Working directory", job.systemd.working_directory))
         for key, value in job.systemd.environment:
-            extras.append(("Environment", f"{key}={value}"))
-        if extras:
-            output.line()
-            output.key_values(extras)
+            details.append(("Environment", f"{key}={value}"))
     if job.cron is not None:
-        output.line()
-        output.key_values([("Source", job.source.detail)])
+        details.append(("Source", job.source.detail))
         if job.source.path:
-            output.key_values([("File", job.source.path)])
+            details.append(("File", job.source.path))
         if job.cron.user:
-            output.key_values([("Run as", job.cron.user)])
+            details.append(("Run as", job.cron.user))
         if job.cron.shell:
-            output.key_values([("SHELL", job.cron.shell)])
+            details.append(("SHELL", job.cron.shell))
         if job.cron.mailto:
-            output.key_values([("MAILTO", job.cron.mailto)])
+            details.append(("MAILTO", job.cron.mailto))
+    if details:
+        output.line()
+        output.key_values(details)
     for warning in job.warnings:
         output.line()
         output.diagnostic(f"Warning: {warning}")
