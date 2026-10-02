@@ -34,6 +34,7 @@ _COLORS = {
     "red": "\033[31m",
     "green": "\033[32m",
     "yellow": "\033[33m",
+    "cyan": "\033[36m",
 }
 
 
@@ -103,7 +104,8 @@ class Output:
             return
         width = max(len(key) for key, _ in pairs)
         for key, value in pairs:
-            self.line(f"{key.ljust(width)}  {value}".rstrip())
+            label = self.style(key.ljust(width), "bold", "cyan")
+            self.line(f"{label}  {value}".rstrip())
 
     def job_datetime(self, value: datetime | None) -> str | None:
         if value is None:

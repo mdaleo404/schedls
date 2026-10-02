@@ -18,6 +18,11 @@ from schedls.models import (
 from schedls.output import Output, job_to_dict, jobs_document, sanitize_text
 
 
+class _TTYStream(io.StringIO):
+    def isatty(self) -> bool:
+        return True
+
+
 def _systemd_job() -> ScheduledJob:
     return ScheduledJob(
         name="backup",
@@ -80,10 +85,30 @@ def test_output_table_and_key_values() -> None:
     stream = io.StringIO()
     output = Output(json_mode=False, color="never", stdout=stream)
     output.table(["NAME", "BACKEND"], [["backup", "systemd"], ["cleanup", "cron"]])
+    output.key_values([("Status", "active")])
     text = stream.getvalue()
     assert "NAME" in text
     assert "backup" in text
     assert "\x1b" not in text
+
+
+def test_key_values_colour_labels_but_not_values() -> None:
+    stream = io.StringIO()
+    output = Output(color="always", stdout=stream)
+
+    output.key_values([("S", "active"), ("Status", "waiting")])
+
+    assert stream.getvalue() == ("\033[1m\033[36mS     \033[0m  active\n\033[1m\033[36mStatus\033[0m  waiting\n")
+
+
+def test_key_values_honours_no_color(monkeypatch) -> None:
+    monkeypatch.setenv("NO_COLOR", "1")
+    stream = _TTYStream()
+    output = Output(color="auto", stdout=stream)
+
+    output.key_values([("Status", "active")])
+
+    assert "\x1b" not in stream.getvalue()
 
 
 def test_output_json_mode() -> None:
