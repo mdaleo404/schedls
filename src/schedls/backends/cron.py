@@ -382,7 +382,6 @@ class CronBackend(SchedulerBackend):
                 schedule=Schedule(ScheduleKind.CRON, (job_line.expression or "") if job_line else ""),
                 command=Command(argv=(), raw=job_line.command if job_line else ""),
                 source=JobSource("current user's crontab", line=block.begin_index),
-                next_run=None,
                 last_run=None,
                 cron=CronDetails(
                     expression=job_line.expression if job_line else None,

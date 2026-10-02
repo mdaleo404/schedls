@@ -35,6 +35,15 @@ Periodic directories only contribute executable, run-parts-style file names.
 Every unrelated line is preserved exactly. `schedls` does not reformat, sort,
 normalize, or rewrite crontab content it did not create.
 
+## Run times
+
+For five-field expressions and calendar nicknames, schedls calculates the next
+cron occurrence in the host's local timezone for human-readable output.
+`@reboot` has no wall-clock next run. Cron does not expose per-entry execution
+history, so previous run times and results are shown as unavailable rather than
+guessed. To keep the stable JSON document contract, cron `next_run` remains
+`null` in `--json` output.
+
 ## Managed blocks
 
 Jobs created by `schedls` in the current user's crontab live in a delimited

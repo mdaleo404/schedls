@@ -77,6 +77,9 @@ class SystemdBackend(SchedulerBackend):
 
     def __init__(self, runner: CommandRunner) -> None:
         self.runner = runner
+        self._manager_ok: dict[Scope, bool] = {}
+        self._user_lingering_checked = False
+        self._user_lingering: bool | None = None
 
     # -- capability detection -------------------------------------------------
 
@@ -87,7 +90,10 @@ class SystemdBackend(SchedulerBackend):
         return self.runner.has("systemd-analyze")
 
     def manager_ok(self, scope: Scope) -> bool:
+        if scope in self._manager_ok:
+            return self._manager_ok[scope]
         if not self.has_systemctl():
+            self._manager_ok[scope] = False
             return False
         try:
             completed = self.runner.run(
@@ -96,14 +102,19 @@ class SystemdBackend(SchedulerBackend):
                 check=False,
             )
         except OperationalError:
+            self._manager_ok[scope] = False
             return False
         state = completed.stdout.strip()
-        return state not in {"", "offline", "unknown"}
+        self._manager_ok[scope] = state not in {"", "offline", "unknown"}
+        return self._manager_ok[scope]
 
     def available(self) -> bool:
         return self.has_systemctl() and (self.manager_ok(Scope.USER) or self.manager_ok(Scope.SYSTEM))
 
     def user_lingering(self) -> bool | None:
+        if self._user_lingering_checked:
+            return self._user_lingering
+        self._user_lingering_checked = True
         if not self.runner.has("loginctl"):
             return None
         try:
@@ -116,7 +127,8 @@ class SystemdBackend(SchedulerBackend):
             return None
         if completed.returncode != 0:
             return None
-        return completed.stdout.strip().endswith("yes")
+        self._user_lingering = completed.stdout.strip().endswith("yes")
+        return self._user_lingering
 
     # -- calendar validation --------------------------------------------------
 
@@ -171,6 +183,20 @@ class SystemdBackend(SchedulerBackend):
                     jobs.append(job)
         return jobs
 
+    def find(self, name: str) -> ScheduledJob | None:
+        """Look up a timer directly instead of discovering every timer."""
+        candidates = (f"schedls-{name}.timer", f"{name}.timer")
+        for scope in (Scope.USER, Scope.SYSTEM):
+            if not self.manager_ok(scope):
+                continue
+            for unit in candidates:
+                if not is_safe_unit_name(unit):
+                    continue
+                job = self._build_job(unit, scope)
+                if job is not None and job.name == name:
+                    return job
+        return None
+
     def _list_timer_units(self, scope: Scope) -> list[str]:
         units: list[str] = []
         seen: set[str] = set()
@@ -212,6 +238,7 @@ class SystemdBackend(SchedulerBackend):
             service_unit = None
         service_fragment = None
         service_sections = None
+        service_props: dict[str, str] = {}
         if service_unit:
             service_props = self._show(service_unit, scope)
             service_fragment = service_props.get("FragmentPath") or None
@@ -227,7 +254,7 @@ class SystemdBackend(SchedulerBackend):
         command = _command_from_service(service_sections)
         next_run = parse_systemd_timestamp(properties.get("NextElapseUSecRealtime", ""))
         last_run = parse_systemd_timestamp(properties.get("LastTriggerUSec", ""))
-        last_result = properties.get("Result") or None
+        last_result = service_props.get("Result") or properties.get("Result") or None
 
         details = SystemdDetails(
             timer_unit=unit,

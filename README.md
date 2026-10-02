@@ -19,7 +19,7 @@ daemon, not a queue, and not a replacement scheduler.
 $ schedls
 NAME              SCHEDULE             NEXT              BACKEND  SCOPE   STATUS
 backup            daily at 02:00       tomorrow 02:00    systemd  user    waiting
-cleanup           0 4 * * 0            —                 cron     user    active
+cleanup           0 4 * * 0            Sun 04:00         cron     user    active
 logrotate         daily                —                 systemd  system  waiting
 ```
 

@@ -15,6 +15,7 @@ from schedls.interact import Interaction
 from schedls.models import (
     Backend,
     Command,
+    CronDetails,
     JobSource,
     JobSpec,
     Schedule,
@@ -70,6 +71,45 @@ def test_render_show() -> None:
     text = stream.getvalue()
     assert "Managed by schedls" in text
     assert "systemd user timer" in text
+
+
+def test_render_show_explains_unavailable_cron_history() -> None:
+    job = ScheduledJob(
+        name="cron-1",
+        backend=Backend.CRON,
+        scope=Scope.USER,
+        managed=False,
+        enabled=None,
+        schedule=Schedule(ScheduleKind.CRON, "0 2 * * *"),
+        command=Command(raw="/usr/bin/backup"),
+        source=JobSource("current user's crontab", line=1),
+        cron=CronDetails(expression="0 2 * * *", line=1),
+    )
+    output, stream = _output()
+
+    inspect_ops.render_show(output, job)
+
+    assert "Previous  unavailable (cron does not provide per-job history)" in stream.getvalue()
+
+
+def test_render_show_keeps_cron_next_run_null_in_json() -> None:
+    job = ScheduledJob(
+        name="cron-1",
+        backend=Backend.CRON,
+        scope=Scope.USER,
+        managed=False,
+        enabled=None,
+        schedule=Schedule(ScheduleKind.CRON, "0 2 * * *"),
+        command=Command(raw="/usr/bin/backup"),
+        source=JobSource("current user's crontab", line=1),
+        cron=CronDetails(expression="0 2 * * *", line=1),
+    )
+    output, stream = _output()
+    output.json_mode = True
+
+    inspect_ops.render_show(output, job)
+
+    assert '"next_run": null' in stream.getvalue()
 
 
 def test_filter_jobs() -> None:
@@ -216,6 +256,32 @@ def test_systemd_backend_discovery_parses_units() -> None:
         assert job.command.argv == ("/usr/local/bin/backup", "/srv/data")
         assert job.enabled is True
         assert job.next_run is not None
+        assert job.last_result == "success"
+
+
+def test_systemd_find_uses_direct_lookup_and_cached_manager_check() -> None:
+    def systemctl(argv, _input):
+        if "is-system-running" in argv:
+            return ("running\n", "")
+        if "show" in argv:
+            unit = argv[argv.index("show") + 1]
+            if unit == "schedls-backup.timer":
+                return ("LoadState=not-found\n", "")
+            if unit == "backup.timer":
+                return ("LoadState=loaded\nUnitFileState=enabled\n", "")
+        return ("", "")
+
+    runner = FakeRunner(handlers={"systemctl": systemctl}, available={"systemctl"})
+    backend = SystemdBackend(runner)
+
+    assert backend.available() is True
+    job = backend.find("backup")
+
+    assert job is not None
+    assert job.name == "backup"
+    calls = [argv for argv, _, _ in runner.calls]
+    assert sum("is-system-running" in argv for argv in calls) == 1
+    assert not any("list-unit-files" in argv or "list-units" in argv for argv in calls)
 
 
 def test_plan_update_refuses_unmanaged() -> None:

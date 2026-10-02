@@ -54,9 +54,13 @@ written to stderr as `Note:` lines.
 $ schedls show backup
 ```
 
-Shows one job in detail: status, backend and scope, whether schedls manages it,
-the schedule, the next and previous runs, the command, the source paths, and any
-systemd extras (persistent, jitter, accuracy, working directory, environment).
+Shows one job in a field-oriented view: status, backend and scope, whether
+schedls manages it, the schedule, next and previous runs, the command, source
+paths, and any systemd extras (persistent, jitter, accuracy, working directory,
+environment). Human-readable cron next runs are calculated in the host's local
+timezone; cron previous runs and results remain unavailable because cron
+exposes no per-job execution history. To preserve the JSON document contract,
+cron `next_run` remains `null` in `--json` output.
 
 ### `new NAME`
 

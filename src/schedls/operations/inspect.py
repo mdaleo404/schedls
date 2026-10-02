@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import os
 from collections.abc import Sequence
+from datetime import datetime
 
 from ..backends.base import SchedulerBackend
+from ..cronexpr import next_occurrence
 from ..errors import SchedlsError
 from ..models import Backend, ScheduledJob, Scope
 from ..output import Output, jobs_document
@@ -76,7 +78,8 @@ def render_list(output: Output, jobs: Sequence[ScheduledJob], warnings: Sequence
     else:
         rows = []
         for job in jobs:
-            next_text = format_short(job.next_run, utc=output.utc) if job.next_run else "—"
+            next_run = _next_run(job)
+            next_text = format_short(next_run, utc=output.utc) if next_run else "—"
             rows.append(
                 [
                     job.name,
@@ -89,7 +92,7 @@ def render_list(output: Output, jobs: Sequence[ScheduledJob], warnings: Sequence
             )
         output.table(["NAME", "SCHEDULE", "NEXT", "BACKEND", "SCOPE", "STATUS"], rows)
     for warning in warnings:
-        output.diagnostic(f"Note: {warning}")
+        output.diagnostic(f"\nNote: {warning}")
 
 
 def render_show(output: Output, job: ScheduledJob) -> None:
@@ -109,9 +112,10 @@ def render_show(output: Output, job: ScheduledJob) -> None:
         for expression in job.schedule.expressions:
             output.key_values([("OnCalendar", expression)])
     output.line()
-    output.key_values([("Next", output.job_datetime(job.next_run) or "unknown")])
+    next_run = _next_run(job)
+    output.key_values([("Next", output.job_datetime(next_run) or _next_unavailable(job))])
     output.line()
-    previous = output.job_datetime(job.last_run) or "unknown"
+    previous = output.job_datetime(job.last_run) or _previous_unavailable(job)
     if job.last_result:
         previous = f"{previous}\nresult: {job.last_result}"
     output.key_values([("Previous", previous)])
@@ -156,3 +160,23 @@ def _backend_label(job: ScheduledJob) -> str:
     if job.backend is Backend.SYSTEMD:
         return f"systemd {job.scope.value} timer"
     return "cron"
+
+
+def _next_unavailable(job: ScheduledJob) -> str:
+    if job.backend is Backend.CRON and job.schedule.expression.lower() == "@reboot":
+        return "unavailable (@reboot has no wall-clock next run)"
+    return "unavailable"
+
+
+def _next_run(job: ScheduledJob) -> datetime | None:
+    if job.next_run is not None:
+        return job.next_run
+    if job.backend is Backend.CRON:
+        return next_occurrence(job.schedule.expression)
+    return None
+
+
+def _previous_unavailable(job: ScheduledJob) -> str:
+    if job.backend is Backend.CRON:
+        return "unavailable (cron does not provide per-job history)"
+    return "unavailable"
