@@ -30,16 +30,16 @@ ordinary systemd unit, and a cron job is an ordinary crontab entry.
 
 ### From the package repository
 
-Native `.deb` and `.rpm` packages are published at
-[repo.sysmd.uk/schedls](https://repo.sysmd.uk/schedls/).
+Native `.deb` and `.rpm` packages are published in the shared
+[SysMD package repository](https://repo.sysmd.uk/sysmd/).
 
 #### Debian / Ubuntu
 
 ```bash
 sudo mkdir -p /usr/share/keyrings
-curl -fsSL https://repo.sysmd.uk/schedls/mdaleo404.gpg | sudo gpg --dearmor -o /usr/share/keyrings/schedls.gpg
+curl -fsSL https://repo.sysmd.uk/sysmd/sysmd.gpg | sudo gpg --dearmor -o /usr/share/keyrings/sysmd.gpg
 
-echo "deb [arch=amd64 signed-by=/usr/share/keyrings/schedls.gpg] https://repo.sysmd.uk/schedls/debian stable main" | sudo tee /etc/apt/sources.list.d/schedls.list
+echo "deb [arch=amd64 signed-by=/usr/share/keyrings/sysmd.gpg] https://repo.sysmd.uk/sysmd/debian stable main" | sudo tee /etc/apt/sources.list.d/sysmd.list
 
 sudo apt update
 sudo apt install schedls
@@ -51,16 +51,16 @@ The signing key fingerprint is
 #### Fedora / RHEL
 
 ```bash
-sudo rpm --import https://repo.sysmd.uk/schedls/mdaleo404.gpg
+sudo rpm --import https://repo.sysmd.uk/sysmd/sysmd.gpg
 
-sudo tee /etc/yum.repos.d/schedls.repo > /dev/null << 'EOF'
-[schedls]
-name=schedls Repository
-baseurl=https://repo.sysmd.uk/schedls/rpm/$basearch
+sudo tee /etc/yum.repos.d/sysmd.repo > /dev/null << 'EOF'
+[sysmd]
+name=SysMD Repository
+baseurl=https://repo.sysmd.uk/sysmd/rpm/$basearch
 enabled=1
 gpgcheck=1
 repo_gpgcheck=1
-gpgkey=https://repo.sysmd.uk/schedls/mdaleo404.gpg
+gpgkey=https://repo.sysmd.uk/sysmd/sysmd.gpg
 EOF
 
 sudo dnf upgrade --refresh
