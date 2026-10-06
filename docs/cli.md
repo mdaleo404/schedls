@@ -252,8 +252,9 @@ Notes:
 - Cron accepts a single schedule.
 - Cron environment variables are not supported yet; passing `--env` with
   `--cron` is rejected rather than silently ignored.
-- Cron jobs are always created for the current user. `--system` selects system
-  scope for systemd timers and is rejected for cron.
+- Cron jobs are created for the current user by default. With `--system` (root
+  only), schedls creates a system cron drop-in; use `--run-as USER` to choose
+  the account that runs it.
 - `new --timer` defaults to user scope. System scope requires appropriate
   privileges; `schedls` never runs `sudo` for you.
 
