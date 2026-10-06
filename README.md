@@ -192,9 +192,10 @@ $ poetry run mypy
 Formatting and linting use [ruff](https://docs.astral.sh/ruff/); security
 scanning uses [Bandit](https://bandit.readthedocs.io/); both run through
 [pre-commit](https://pre-commit.com/) alongside trailing-whitespace, end-of-file,
-YAML and TOML checks. CI runs the same hooks on every push and pull request,
-followed by a strict type check, the test matrix (Python 3.11–3.14) and a package
-build. A scheduled workflow builds an SBOM and scans it with Grype.
+YAML and TOML checks. CI runs on pull requests, applying the same hooks and a
+strict type check on Python 3.13, and running the unit and security tests on
+Python 3.11 and 3.13. Build distributions locally with `poetry build`. The
+Gitea scheduled workflow builds an SBOM and scans it with Grype.
 
 ## Support
 
