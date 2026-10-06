@@ -72,6 +72,28 @@ def test_without_block_removes_only_block() -> None:
     assert "@daily /usr/local/bin/nightly" in updated
 
 
+def test_with_updated_job_preserves_all_other_content() -> None:
+    document = CrontabDocument(SAMPLE)
+    updated = document.with_updated_job("backup", "30 3 * * * /usr/local/bin/backup /srv/data")
+
+    assert updated == SAMPLE.replace(
+        "0 2 * * * /usr/local/bin/backup /srv/data",
+        "30 3 * * * /usr/local/bin/backup /srv/data",
+    )
+
+
+def test_with_updated_job_requires_exactly_one_job() -> None:
+    document = CrontabDocument(
+        "# schedls:begin name=backup\n"
+        "0 2 * * * /usr/local/bin/backup\n"
+        "0 3 * * * /usr/local/bin/other\n"
+        "# schedls:end name=backup\n"
+    )
+
+    with pytest.raises(SafetyRefusalError, match="exactly one job"):
+        document.with_updated_job("backup", "30 3 * * * /usr/local/bin/backup")
+
+
 def test_without_unknown_block_refused() -> None:
     document = CrontabDocument(SAMPLE)
     with pytest.raises(SafetyRefusalError):
@@ -85,6 +107,8 @@ def test_malformed_marker_blocks_mutation() -> None:
         document.with_block("new", ["0 3 * * * /bin/true"])
     with pytest.raises(SafetyRefusalError):
         document.without_block("broken")
+    with pytest.raises(SafetyRefusalError):
+        document.with_updated_job("broken", "0 3 * * * /bin/true")
 
 
 def test_empty_crontab() -> None:

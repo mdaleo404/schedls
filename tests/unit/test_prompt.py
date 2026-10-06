@@ -9,6 +9,7 @@ from schedls.errors import ConfirmationRequiredError, InvalidScheduleError
 from schedls.models import (
     Backend,
     Command,
+    CronDetails,
     JobSource,
     Schedule,
     ScheduledJob,
@@ -57,6 +58,20 @@ def _systemd_job() -> ScheduledJob:
         command=Command(argv=("/usr/local/bin/backup",)),
         source=JobSource(detail="systemd user timer"),
         systemd=SystemdDetails(on_calendar=("*-*-* 02:00:00",)),
+    )
+
+
+def _cron_job() -> ScheduledJob:
+    return ScheduledJob(
+        name="cleanup",
+        backend=Backend.CRON,
+        scope=Scope.USER,
+        managed=True,
+        enabled=None,
+        schedule=Schedule(ScheduleKind.CRON, "0 2 * * *"),
+        command=Command(raw="/usr/local/bin/cleanup"),
+        source=JobSource(detail="current user's crontab"),
+        cron=CronDetails(expression="0 2 * * *"),
     )
 
 
@@ -258,6 +273,16 @@ def test_wizard_edit_changes_schedule(monkeypatch: pytest.MonkeyPatch) -> None:
     args, tail = _wizard_edit(job, args, [], prompter)
     spec = _spec_for_edit(job, args, tail)
     assert spec.calendar == ("*-*-* 03:00:00",)
+
+
+def test_wizard_edit_changes_cron_schedule(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("sys.stdin", FakeStdin(isatty=True))
+    args = build_parser().parse_args(["edit", "cleanup", "-i"])
+    prompter, _ = make_prompter(["n", "y", "", "03:00"])
+    args, tail = _wizard_edit(_cron_job(), args, [], prompter)
+    spec = _spec_for_edit(_cron_job(), args, tail)
+
+    assert spec.cron_expression == "0 3 * * *"
 
 
 def test_wizard_edit_keeps_changes_optional(monkeypatch: pytest.MonkeyPatch) -> None:

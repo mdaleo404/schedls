@@ -5,7 +5,7 @@ import os
 import pytest
 
 from schedls.backends.base import FileChange, Plan
-from schedls.backends.cron import CronBackend, CronPaths
+from schedls.backends.cron import CronBackend, CronPaths, CrontabDocument
 from schedls.errors import ConflictError, InvalidScheduleError, SafetyRefusalError
 from schedls.models import Backend, Command, JobSpec, Scope
 from schedls.renderers import cron as renderer
@@ -181,6 +181,110 @@ def test_plan_create_system_cron_conflict(tmp_path, fake_runner, monkeypatch) ->
         CronBackend(fake_runner, paths).plan_create(_system_spec())
 
 
+def test_update_user_cron_preserves_existing_command(tmp_path, fake_runner) -> None:
+    document = CrontabDocument(
+        "# unrelated comment\n"
+        "# schedls:begin name=backup\n"
+        "0 2 * * * /usr/bin/printf '50\\%s\\n'\n"
+        "# schedls:end name=backup\n"
+    )
+    state = {"text": document.text}
+
+    def crontab(argv, input_text):
+        if argv == ["crontab", "-l"]:
+            return state["text"], ""
+        if argv == ["crontab", "-"]:
+            state["text"] = input_text or ""
+            return "", ""
+        return 1, "", "unsupported"
+
+    fake_runner.available.add("crontab")
+    fake_runner.handlers["crontab"] = crontab
+    backend = CronBackend(fake_runner, _make_paths(tmp_path))
+    job = backend.discover([Scope.USER])[0]
+
+    plan = backend.plan_update(
+        job,
+        JobSpec(
+            name="backup",
+            backend=Backend.CRON,
+            scope=Scope.USER,
+            command=job.command,
+            cron_expression="30 3 * * *",
+        ),
+    )
+
+    assert plan.action == "update"
+    assert "# unrelated comment" in plan.payload["new_text"]
+    assert "30 3 * * * /usr/bin/printf '50\\%s\\n'" in plan.payload["new_text"]
+    assert "50\\\\%" not in plan.payload["new_text"]
+    state["text"] = state["text"].replace("0 2 * * *", "15 2 * * *")
+    with pytest.raises(SafetyRefusalError, match="crontab changed"):
+        backend.apply(plan)
+
+    plan = backend.plan_update(
+        job,
+        JobSpec(
+            name="backup",
+            backend=Backend.CRON,
+            scope=Scope.USER,
+            command=job.command,
+            cron_expression="30 3 * * *",
+        ),
+    )
+    result = backend.apply(plan)
+    assert result.changed
+    assert state["text"] == plan.payload["new_text"]
+
+
+def test_plan_update_system_cron_preserves_run_as_and_other_content(tmp_path, fake_runner, monkeypatch) -> None:
+    paths = _make_paths(tmp_path)
+    path = _write(
+        tmp_path / "etc/cron.d/schedls-cleanup",
+        "# unrelated comment\n" + renderer.render_system_file("cleanup", ["30 3 * * 0 root /usr/bin/cleanup"]),
+    )
+    backend = CronBackend(fake_runner, paths)
+    job = backend.discover([Scope.SYSTEM])[0]
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    trusted_directories: list[tuple[str, int]] = []
+
+    def check_trusted_directory(path: str, *, expected_uid: int) -> None:
+        trusted_directories.append((path, expected_uid))
+
+    monkeypatch.setattr("schedls.backends.cron.check_trusted_directory", check_trusted_directory)
+
+    plan = backend.plan_update(
+        job,
+        _system_spec(
+            name="cleanup",
+            command=Command(argv=("/usr/bin/cleanup", "--full")),
+            cron_expression="15 4 * * *",
+            run_as="www-data",
+        ),
+    )
+
+    assert plan.action == "update"
+    assert plan.files[0].path == str(path)
+    assert "# unrelated comment" in plan.files[0].content
+    assert "15 4 * * * root /usr/bin/cleanup --full" in plan.files[0].content
+    assert "www-data" not in plan.files[0].content
+    assert trusted_directories == [(paths.cron_d, 0)]
+
+
+def test_plan_update_system_cron_requires_root(tmp_path, fake_runner, monkeypatch) -> None:
+    paths = _make_paths(tmp_path)
+    _write(
+        tmp_path / "etc/cron.d/schedls-cleanup",
+        renderer.render_system_file("cleanup", ["30 3 * * 0 root /usr/bin/cleanup"]),
+    )
+    backend = CronBackend(fake_runner, paths)
+    job = backend.discover([Scope.SYSTEM])[0]
+    monkeypatch.setattr(os, "geteuid", lambda: 1000)
+
+    with pytest.raises(SafetyRefusalError):
+        backend.plan_update(job, _system_spec(name="cleanup"))
+
+
 def test_apply_file_mode_create_and_remove(tmp_path, fake_runner) -> None:
     paths = _make_paths(tmp_path)
     (tmp_path / "etc/cron.d").mkdir(parents=True, exist_ok=True)
@@ -203,6 +307,23 @@ def test_apply_file_mode_create_and_remove(tmp_path, fake_runner) -> None:
     assert result.changed
     assert path.read_text() == content
 
+    updated_content = renderer.render_system_file("backup", ["30    3 * * * root /usr/bin/backup --full"])
+    update = Plan(backend="cron", action="update")
+    update.files = [FileChange(path=str(path), content=updated_content, mode=0o644, expected_uid=uid)]
+    update.payload = {
+        "mode": "file",
+        "action": "update",
+        "name": "backup",
+        "path": str(path),
+        "expected_uid": uid,
+        "snapshots": {str(path): content},
+        "expected_line": "30 3 * * * root /usr/bin/backup --full",
+    }
+    result = backend.apply(update)
+    assert result.changed
+    assert result.messages == ["System cron drop-in updated."]
+    assert path.read_text() == updated_content
+
     remove = Plan(backend="cron", action="remove")
     remove.files = [FileChange(path=str(path), content=None, expected_uid=uid)]
     remove.payload = {
@@ -211,24 +332,24 @@ def test_apply_file_mode_create_and_remove(tmp_path, fake_runner) -> None:
         "name": "backup",
         "path": str(path),
         "expected_uid": uid,
-        "snapshots": {str(path): content},
+        "snapshots": {str(path): updated_content},
     }
     result = backend.apply(remove)
     assert result.changed
     assert not path.exists()
 
 
-def test_apply_file_mode_refuses_changed_snapshot(tmp_path, fake_runner) -> None:
+def test_apply_file_update_refuses_changed_snapshot(tmp_path, fake_runner) -> None:
     paths = _make_paths(tmp_path)
     _write(tmp_path / "etc/cron.d/schedls-backup", "changed\n")
     backend = CronBackend(fake_runner, paths)
     path = tmp_path / "etc/cron.d/schedls-backup"
 
-    plan = Plan(backend="cron", action="remove")
-    plan.files = [FileChange(path=str(path), content=None, expected_uid=os.getuid())]
+    plan = Plan(backend="cron", action="update")
+    plan.files = [FileChange(path=str(path), content="new content\n", expected_uid=os.getuid())]
     plan.payload = {
         "mode": "file",
-        "action": "remove",
+        "action": "update",
         "name": "backup",
         "path": str(path),
         "expected_uid": os.getuid(),

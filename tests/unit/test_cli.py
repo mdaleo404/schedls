@@ -6,9 +6,9 @@ import sys
 
 import pytest
 
-from schedls.cli import _parse_environment, _spec_for_new, build_parser, main, split_command
+from schedls.cli import _parse_environment, _spec_for_edit, _spec_for_new, build_parser, main, split_command
 from schedls.errors import InvalidNameError, UsageError
-from schedls.models import Backend, Scope
+from schedls.models import Backend, Command, CronDetails, JobSource, Schedule, ScheduledJob, ScheduleKind, Scope
 
 
 def test_split_command() -> None:
@@ -172,6 +172,47 @@ def test_spec_for_new_rejects_run_as_for_timer() -> None:
     args = build_parser().parse_args(["new", "x", "--timer", "--daily", "02:00", "--run-as", "www-data"])
     with pytest.raises(UsageError):
         _spec_for_new(args, ["/bin/true"])
+
+
+def _cron_job() -> ScheduledJob:
+    return ScheduledJob(
+        name="cleanup",
+        backend=Backend.CRON,
+        scope=Scope.USER,
+        managed=True,
+        enabled=None,
+        schedule=Schedule(ScheduleKind.CRON, "0 2 * * *"),
+        command=Command(raw="/usr/local/bin/cleanup"),
+        source=JobSource("current user's crontab", line=1),
+        cron=CronDetails(expression="0 2 * * *", line=1),
+    )
+
+
+def test_spec_for_edit_cron_preserves_command_and_changes_schedule() -> None:
+    args = build_parser().parse_args(["edit", "cleanup", "--daily", "03:00"])
+    job = _cron_job()
+
+    spec = _spec_for_edit(job, args, [])
+
+    assert spec.backend is Backend.CRON
+    assert spec.cron_expression == "0 3 * * *"
+    assert spec.command == job.command
+
+
+def test_spec_for_edit_cron_replaces_command() -> None:
+    args = build_parser().parse_args(["edit", "cleanup", "--command"])
+
+    spec = _spec_for_edit(_cron_job(), args, ["/usr/local/bin/cleanup", "--full"])
+
+    assert spec.command.argv == ("/usr/local/bin/cleanup", "--full")
+
+
+@pytest.mark.parametrize("extra", [["--calendar", "daily"], ["--persistent"], ["--env", "A=1"]])
+def test_spec_for_edit_cron_rejects_systemd_options(extra: list[str]) -> None:
+    args = build_parser().parse_args(["edit", "cleanup", *extra])
+
+    with pytest.raises(UsageError):
+        _spec_for_edit(_cron_job(), args, [])
 
 
 @pytest.mark.parametrize("value", ["0", "-1", "1000001", "abc"])

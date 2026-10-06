@@ -114,6 +114,7 @@ $ schedls new rotate --timer --daily 03:00 --shell 'find /tmp -mtime +7 -delete'
 
 ```console
 $ schedls edit backup --daily 03:00
+$ schedls edit cleanup --cron-expr '0 4 * * 0'
 $ schedls edit backup --jitter 5min --no-persistent
 $ schedls edit backup --command -- /usr/local/bin/backup /srv/data
 $ schedls edit backup -i
@@ -126,8 +127,10 @@ everything else keeps its current value.
   Passing `--` without `--command` is an error, so the command can never be
   changed by accident.
 - `--no-persistent` clears `Persistent=` on a systemd timer.
-- Editing is supported for systemd timers only. Editing cron jobs is not yet
-  supported and reports a usage error.
+- Editing is supported for schedls-managed systemd timers and cron jobs. A cron
+  edit changes only the job line in its managed block and preserves every other
+  cron line. Editing a system cron drop-in requires root and preserves its
+  existing `run-as` user.
 
 ### `rm NAME`
 

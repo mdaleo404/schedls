@@ -58,6 +58,22 @@ block:
 If markers are malformed or a `begin` has no matching `end`, mutations refuse
 to proceed rather than guess.
 
+## Editing
+
+`schedls edit` supports jobs in valid schedls-managed blocks. It updates only
+the single cron job line in the block, leaving comments, environment
+assignments, and all other cron entries unchanged. If a block has malformed
+markers or does not contain exactly one job line, schedls refuses to edit it.
+
+When only the schedule changes, schedls retains the existing cron command
+without reverse-parsing or re-quoting shell syntax. Replacing a command uses
+the normal safe command renderer.
+
+For a system drop-in, editing requires root and re-checks the expected
+`/etc/cron.d/schedls-<name>` path, ownership, trusted directory, and file
+snapshot before atomically replacing the file. The existing `run-as` user is
+preserved.
+
 ## System drop-ins
 
 A system cron job is a file named after the schedule:
@@ -143,7 +159,6 @@ command-line compatibility but have no effect on cron jobs; see
 
 ## Not yet supported
 
-- editing cron jobs (user or system);
 - token-level updates of `/etc/crontab` (read-only, shared file);
 - anacron (`/etc/anacrontab`);
 - removing or editing periodic directory scripts;

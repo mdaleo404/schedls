@@ -58,7 +58,20 @@ def test_cron_lifecycle_preserves_content() -> None:
 
         job = backend.find(NAME)
         assert job is not None
-        backend.apply(backend.plan_remove(job))
+        update = JobSpec(
+            name=NAME,
+            backend=Backend.CRON,
+            scope=Scope.USER,
+            command=Command(argv=("/usr/bin/true", "updated")),
+            cron_expression="30 3 * * *",
+        )
+        backend.apply(backend.plan_update(job, update))
+        updated = backend.find(NAME)
+        assert updated is not None
+        assert updated.schedule.expression == "30 3 * * *"
+        assert updated.command.raw == "/usr/bin/true updated"
+
+        backend.apply(backend.plan_remove(updated))
         assert "# unrelated comment" in backend.read().text
         assert backend.find(NAME) is None
     finally:
@@ -104,7 +117,22 @@ def test_system_cron_lifecycle() -> None:
         assert job.managed is True
         assert job.cron is not None and job.cron.user == "root"
 
-        backend.apply(backend.plan_remove(job))
+        update = JobSpec(
+            name=SYSTEM_NAME,
+            backend=Backend.CRON,
+            scope=Scope.SYSTEM,
+            command=Command(argv=("/usr/bin/true", "updated")),
+            cron_expression="30 3 * * *",
+            run_as="root",
+        )
+        backend.apply(backend.plan_update(job, update))
+        updated = backend.find(SYSTEM_NAME)
+        assert updated is not None
+        assert updated.schedule.expression == "30 3 * * *"
+        assert updated.cron is not None and updated.cron.user == "root"
+        assert updated.command.raw == "/usr/bin/true updated"
+
+        backend.apply(backend.plan_remove(updated))
         assert not os.path.exists(path)
         assert backend.find(SYSTEM_NAME) is None
     finally:

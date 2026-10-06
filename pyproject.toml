@@ -1,6 +1,6 @@
 [project]
 name = "schedls"
-version = "0.3.0"
+version = "0.4.0"
 description = "Inspect and manage Linux scheduled jobs"
 authors = [
     { name = "Marco D'Aleo", email = "marco@marcodaleo.com" }
@@ -11,7 +11,6 @@ requires-python = ">=3.11,<4.0"
 dependencies = ["argcomplete>=3.3,<4.0"]
 keywords = ["cron", "crontab", "systemd", "timer", "scheduler", "cli", "sysadmin"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
     "Environment :: Console",
     "Intended Audience :: System Administrators",
     "Operating System :: POSIX :: Linux",

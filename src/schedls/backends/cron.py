@@ -33,6 +33,7 @@ from ..runner import CommandRunner
 from ..security import (
     atomic_write_text,
     check_trusted_directory,
+    has_unsafe_control_characters,
     remove_file,
     validate_name,
 )
@@ -251,6 +252,30 @@ class CrontabDocument:
             return ""
         return "\n".join(keep) + "\n"
 
+    def managed_job_line(self, name: str) -> CrontabEntry:
+        if self.has_malformed_markers():
+            raise SafetyRefusalError("existing crontab contains malformed schedls markers; refusing to edit.")
+        block = self._blocks.get(name)
+        if block is None:
+            raise SafetyRefusalError(f"no schedls-managed cron block named {name!r}.")
+        job_lines = [entry for entry in block.job_lines if entry.kind == "job"]
+        if len(job_lines) != 1:
+            raise SafetyRefusalError(
+                f"schedls-managed cron block {name!r} must contain exactly one job; refusing to edit."
+            )
+        return job_lines[0]
+
+    def with_updated_job(self, name: str, line: str) -> str:
+        job = self.managed_job_line(name)
+        if has_unsafe_control_characters(line):
+            raise SafetyRefusalError("cron job line must not contain NUL or newline")
+        lines = list(self.lines)
+        lines[job.index - 1] = line
+        body = "\n".join(lines)
+        if self.had_trailing_newline and body:
+            return body + "\n"
+        return body
+
 
 def _split_job(stripped: str, *, system: bool = False) -> tuple[str | None, str | None, str | None]:
     nickname = _NICKNAME_RE.match(stripped)
@@ -279,6 +304,7 @@ class CronBackend(SchedulerBackend):
     capabilities = Capabilities(
         discovery=True,
         create=True,
+        update=True,
         remove=True,
         next_run=False,
         validation=True,
@@ -657,6 +683,124 @@ class CronBackend(SchedulerBackend):
         }
         return plan
 
+    def plan_update(self, current: ScheduledJob, spec: JobSpec) -> Plan:
+        if not current.managed:
+            raise SafetyRefusalError(
+                f"{current.name} was not created by schedls.",
+                hint="schedls will not modify unmanaged schedules by default.",
+            )
+        if current.backend is not Backend.CRON or spec.backend is not Backend.CRON:
+            raise SafetyRefusalError(f"{current.name} is not a cron job.")
+        if current.name != spec.name or current.scope is not spec.scope:
+            raise SafetyRefusalError("cron job updates must keep the existing name and scope.")
+        if current.scope is Scope.SYSTEM:
+            return self._plan_update_system(current, spec)
+        if current.scope is Scope.USER:
+            return self._plan_update_user(current, spec)
+        raise SafetyRefusalError("unsupported cron scope.")
+
+    def _plan_update_user(self, current: ScheduledJob, spec: JobSpec) -> Plan:
+        if not self.crontab_available():
+            raise OperationalError("crontab is not available")
+        document = self.read()
+        old_line = document.managed_job_line(current.name)
+        expression = renderer.validate_expression(spec.cron_expression or "")
+        line = self._render_updated_line(
+            expression,
+            spec.command,
+            old_line.command,
+            preserve_command=spec.command == current.command,
+        )
+        new_text = document.with_updated_job(current.name, line)
+        plan = Plan(backend=self.name, action="update")
+        plan.summary = [
+            ("Backend", "cron (current user)"),
+            ("Schedule", expression),
+            ("Command", spec.command.display()),
+            ("Execute via", "/bin/sh"),
+        ]
+        plan.commands = self._install_commands(new_text)
+        plan.warnings.append("Cron executes command text through /bin/sh (or the crontab's configured SHELL).")
+        plan.payload = {
+            "mode": "crontab",
+            "action": "update",
+            "name": current.name,
+            "old_text": document.text,
+            "new_text": new_text,
+            "expected_line": line,
+        }
+        return plan
+
+    def _plan_update_system(self, current: ScheduledJob, spec: JobSpec) -> Plan:
+        if os.geteuid() != 0:
+            raise SafetyRefusalError(
+                "editing a system cron job requires appropriate privileges.",
+                hint="Run the command under sudo yourself if that is your intention:\n  sudo schedls edit ...",
+            )
+        renderer.validate_system_name(current.name)
+        directory = self.paths.cron_d
+        if not os.path.isdir(directory):
+            raise OperationalError(f"system cron directory does not exist: {directory}")
+        check_trusted_directory(directory, expected_uid=0)
+        path = current.source.path
+        expected_path = os.path.join(directory, f"{_MANAGED_PREFIX}{current.name}")
+        if path != expected_path:
+            raise SafetyRefusalError(f"refusing to edit unexpected system cron file: {path!r}")
+        content = _read_text(path)
+        if content is None:
+            raise OperationalError(f"could not read {path}")
+        document = CrontabDocument(content, system=True)
+        old_line = document.managed_job_line(current.name)
+        run_as = renderer.validate_run_as(old_line.user or "")
+        expression = renderer.validate_expression(spec.cron_expression or "")
+        line = self._render_updated_line(
+            expression,
+            spec.command,
+            old_line.command,
+            run_as=run_as,
+            preserve_command=spec.command == current.command,
+        )
+        new_text = document.with_updated_job(current.name, line)
+        plan = Plan(backend=self.name, action="update")
+        plan.summary = [
+            ("Backend", "cron (system)"),
+            ("Schedule", expression),
+            ("Run as", run_as),
+            ("Command", spec.command.display()),
+            ("File", path),
+        ]
+        plan.files = [FileChange(path=path, content=new_text, mode=0o644, expected_uid=0)]
+        plan.warnings.append("Cron executes command text through /bin/sh (or the crontab's configured SHELL).")
+        plan.payload = {
+            "mode": "file",
+            "action": "update",
+            "name": current.name,
+            "path": path,
+            "expected_uid": 0,
+            "snapshots": {path: content},
+            "expected_line": line,
+        }
+        return plan
+
+    @staticmethod
+    def _render_updated_line(
+        expression: str,
+        command: Command,
+        existing_command: str | None,
+        *,
+        preserve_command: bool,
+        run_as: str | None = None,
+    ) -> str:
+        if preserve_command:
+            if not existing_command or has_unsafe_control_characters(existing_command):
+                raise SafetyRefusalError("existing cron command cannot be safely preserved.")
+            if run_as is None:
+                return f"{expression} {existing_command}"
+            return f"{expression} {run_as} {existing_command}"
+        if run_as is None:
+            return renderer.render_line(expression, command)
+        return renderer.render_system_line(expression, command, run_as)
+
     def plan_remove(self, job: ScheduledJob) -> Plan:
         if not job.managed:
             raise SafetyRefusalError(
@@ -777,7 +921,14 @@ class CronBackend(SchedulerBackend):
             raise OperationalError(str(exc)) from exc
         self._verify_installed(plan)
         action = plan.payload.get("action")
-        message = "System cron drop-in installed." if action == "create" else "System cron drop-in removed."
+        if action == "create":
+            message = "System cron drop-in installed."
+        elif action == "update":
+            message = "System cron drop-in updated."
+        elif action == "remove":
+            message = "System cron drop-in removed."
+        else:
+            message = "System cron drop-in changed."
         return MutationResult(changed=bool(written), messages=[message])
 
     def _rollback_file(
@@ -811,16 +962,51 @@ class CronBackend(SchedulerBackend):
 
     def _verify_installed(self, plan: Plan) -> None:
         name = plan.payload.get("name")
+        action = plan.payload.get("action")
+        expected_line = plan.payload.get("expected_line")
         if plan.payload.get("mode") == "file":
-            if plan.payload.get("action") != "create" or not name:
+            if action not in {"create", "update"} or not name:
                 return
             document = CrontabDocument(_read_text(plan.payload.get("path", "")) or "", system=True)
-            if name not in document.managed_blocks():
+            try:
+                job_line = document.managed_job_line(name)
+            except SafetyRefusalError as exc:
+                raise OperationalError("the drop-in was written but the schedls block could not be verified.") from exc
+            if not self._matches_expected_line(job_line, expected_line, system=True):
                 raise OperationalError("the drop-in was written but the schedls block could not be verified.")
             return
         document = self.read()
-        if plan.payload.get("action") == "create" and name and name not in document.managed_blocks():
-            raise OperationalError("the crontab was installed but the schedls block could not be verified.")
+        if action in {"create", "update"} and name:
+            try:
+                job_line = document.managed_job_line(name)
+            except SafetyRefusalError as exc:
+                raise OperationalError(
+                    "the crontab was installed but the schedls block could not be verified."
+                ) from exc
+            if not self._matches_expected_line(job_line, expected_line, system=False):
+                raise OperationalError("the crontab was installed but the schedls block could not be verified.")
+
+    @staticmethod
+    def _matches_expected_line(job_line: CrontabEntry, expected_line: object, *, system: bool) -> bool:
+        if expected_line is None:
+            return True
+        if not isinstance(expected_line, str):
+            return False
+        expected_entries = [
+            entry for entry in CrontabDocument(expected_line, system=system).entries if entry.kind == "job"
+        ]
+        if len(expected_entries) != 1:
+            return False
+        expected = expected_entries[0]
+        return (
+            job_line.expression,
+            job_line.user,
+            job_line.command,
+        ) == (
+            expected.expression,
+            expected.user,
+            expected.command,
+        )
 
     def _restore(self, text: str) -> None:
         with contextlib.suppress(Exception):

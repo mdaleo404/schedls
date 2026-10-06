@@ -583,6 +583,25 @@ def _spec_for_edit(job: ScheduledJob, args: argparse.Namespace, tail: list[str])
             else (job.systemd.working_directory if job.systemd else None),
             environment=_parse_environment(args.env) if args.env else (job.systemd.environment if job.systemd else ()),
         )
+    if job.backend is Backend.CRON:
+        if args.calendar:
+            raise UsageError("--calendar is a systemd option; use --cron-expr for cron.")
+        if args.persistent or args.no_persistent or args.jitter or args.accuracy or args.working_directory:
+            raise UsageError("--persistent/--jitter/--accuracy/--working-directory are systemd options.")
+        if args.env:
+            raise UsageError("--env is a systemd option; cron environment variables are not supported yet.")
+        expression = _cron_expression_from_args(args)
+        if expression is None:
+            expression = job.cron.expression if job.cron else job.schedule.expression
+        if not expression:
+            raise UsageError("the existing cron job has no schedule; refusing to edit it.")
+        return JobSpec(
+            name=job.name,
+            backend=Backend.CRON,
+            scope=job.scope,
+            command=command,
+            cron_expression=expression,
+        )
     raise UsageError(f"editing {job.backend.value} jobs is not supported yet.")
 
 
@@ -708,9 +727,13 @@ def _wizard_edit(
         else:
             args.replace_command = True
             tail = list(command.argv)
+    if (
+        job.backend in {Backend.SYSTEMD, Backend.CRON}
+        and not _has_schedule(args)
+        and prompter.yes_no("Change the schedule?", default=False)
+    ):
+        _apply_schedule(args, prompter.schedule(job.backend))
     if job.backend is Backend.SYSTEMD:
-        if not _has_schedule(args) and prompter.yes_no("Change the schedule?", default=False):
-            _apply_schedule(args, prompter.schedule(job.backend))
         _wizard_edit_advanced(job, args, prompter)
     return args, tail
 

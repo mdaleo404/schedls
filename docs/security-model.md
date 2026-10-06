@@ -113,6 +113,6 @@ completion. Development dependencies are locked and audited in CI.
 
 ## Availability, privacy
 
-`0.3.0` requires `systemd-analyze` to create or validate calendar expressions
+`0.4.0` requires `systemd-analyze` to create or validate calendar expressions
 and refuses the operation if it is unavailable. `schedls` makes no network
 requests and collects no telemetry.
