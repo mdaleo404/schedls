@@ -2,28 +2,111 @@ name: CI
 
 on:
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  test:
+  lint-and-security:
+    name: lint-and-security
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install Poetry
+        run: pip install "poetry>=2,<3"
+
+      - name: Install dev dependencies (lockfile-pinned pre-commit)
+        run: poetry install --with dev --no-root
+
+      - name: Run pre-commit hooks
+        run: poetry run pre-commit run --all-files --color always
+
+      - name: Type check
+        run: poetry run mypy
+
+      - name: Install pip-audit
+        run: pip install "pip-audit==2.10.1"
+
+      - name: Audit dependencies (Poetry lockfile)
+        run: |
+          set -euo pipefail
+
+          poetry self add poetry-plugin-export
+          poetry export -f requirements.txt --without-hashes -o requirements-audit.txt
+
+          # pip-audit exits non-zero for ANY vulnerability; capture the report, then gate below.
+          pip-audit --no-deps -r requirements-audit.txt -f json -o pip-audit.json || true
+
+          echo "Fixable vulnerabilities:"
+          jq -r '
+            .dependencies[]?
+            | select(has("vulns"))
+            | . as $d
+            | .vulns[]
+            | select((.fix_versions | length) > 0)
+            | "\($d.name)@\($d.version) -> \(.id) [fix: \(.fix_versions | join(", "))]"
+          ' pip-audit.json
+
+          echo
+          echo "All reported vulnerabilities:"
+          jq -r '
+            .dependencies[]?
+            | select(has("vulns"))
+            | . as $d
+            | .vulns[]
+            | "\($d.name)@\($d.version) -> \(.id) [fix: \(if (.fix_versions | length) > 0 then (.fix_versions | join(", ")) else "none" end)]"
+          ' pip-audit.json
+
+          # Fail only on fixable findings. The type guard ensures a crashed or empty
+          # report fails rather than silently passing. Dependency security updates
+          # are handled by the central Renovate job.
+          jq -e '
+            (.dependencies | type) == "array"
+            and
+            ( [ .dependencies[] | (.vulns // [])[] | select((.fix_versions | length) > 0) ] | length == 0 )
+          ' pip-audit.json
+
+  tests:
+    name: tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.11", "3.13"]
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install project and tooling
-        run: pip install -e . pytest mypy pre-commit
+      - name: Install Poetry
+        run: pip install "poetry>=2,<3"
 
-      - name: Lint and typecheck
-        if: matrix.python-version == '3.13'
-        run: |
-          pre-commit run --all-files --color always
-          mypy
+      - name: Install project and dependencies
+        run: poetry install --with dev
 
-      - name: Unit and security tests
-        run: pytest tests/unit tests/security
+      - name: Run tests
+        run: poetry run pytest
