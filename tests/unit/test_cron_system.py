@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 
 import pytest
 
@@ -8,6 +9,8 @@ from schedls.backends.base import FileChange, Plan
 from schedls.backends.cron import CronBackend, CronPaths, CrontabDocument
 from schedls.errors import ConflictError, InvalidScheduleError, SafetyRefusalError
 from schedls.models import Backend, Command, JobSpec, Scope
+from schedls.operations import inspect as inspect_ops
+from schedls.output import job_to_dict
 from schedls.renderers import cron as renderer
 
 
@@ -49,7 +52,7 @@ def test_discovers_system_crontabs(tmp_path, fake_runner) -> None:
     _write(tmp_path / "etc/cron.d/backup", "0 2 * * * root /usr/bin/backup\n")
     _write(
         tmp_path / "etc/cron.d/schedls-cleanup",
-        renderer.render_system_file("cleanup", ["30 3 * * 0 deploy /usr/bin/cleanup"]),
+        renderer.render_system_file("cleanup", ["30 3 * * 0 deploy GREETING='hello world' /usr/bin/cleanup"]),
     )
     _write(tmp_path / "etc/cron.d/with.dot", "0 2 * * * root /usr/bin/ignored\n")
     _write(tmp_path / "etc/cron.d/.placeholder", "")
@@ -70,7 +73,351 @@ def test_discovers_system_crontabs(tmp_path, fake_runner) -> None:
     assert managed.managed is True
     assert managed.cron.user == "deploy"
     assert managed.schedule.expression == "30 3 * * 0"
+    assert managed.command.raw == "/usr/bin/cleanup"
+    assert managed.cron.environment == (("GREETING", "hello world"),)
     assert managed.source.path == paths.cron_d + "/schedls-cleanup"
+
+
+def test_discovers_disabled_managed_user_cron_job(tmp_path, fake_runner) -> None:
+    text = (
+        "# schedls:begin name=backup\n"
+        "# schedls:disabled 0 2 * * * /usr/bin/backup /srv/data\n"
+        "# schedls:end name=backup\n"
+    )
+
+    def crontab(argv, input_text):
+        assert argv == ["crontab", "-l"]
+        assert input_text is None
+        return text, ""
+
+    fake_runner.available.add("crontab")
+    fake_runner.handlers["crontab"] = crontab
+
+    jobs = CronBackend(fake_runner, _make_paths(tmp_path)).discover([Scope.USER])
+
+    assert len(jobs) == 1
+    job = jobs[0]
+    assert job.managed is True
+    assert job.enabled is False
+    assert job.schedule.expression == "0 2 * * *"
+    assert job.command.raw == "/usr/bin/backup /srv/data"
+    assert inspect_ops.filter_jobs(jobs, enabled=False) == jobs
+    assert inspect_ops.job_status(job) == "disabled"
+    assert job_to_dict(job)["enabled"] is False
+
+
+def test_discovers_managed_cron_environment_as_logical_values(tmp_path, fake_runner) -> None:
+    text = (
+        "# schedls:begin name=backup\n"
+        "0 2 * * * GREETING='hello world' RATE=100\\% /usr/bin/backup /srv/data\n"
+        "# schedls:end name=backup\n"
+    )
+
+    def crontab(argv, input_text):
+        assert argv == ["crontab", "-l"]
+        assert input_text is None
+        return text, ""
+
+    fake_runner.available.add("crontab")
+    fake_runner.handlers["crontab"] = crontab
+
+    job = CronBackend(fake_runner, _make_paths(tmp_path)).discover([Scope.USER])[0]
+
+    assert job.command.raw == "/usr/bin/backup /srv/data"
+    assert job.cron is not None
+    assert job.cron.environment == (("GREETING", "hello world"), ("RATE", "100%"))
+    assert job_to_dict(job)["cron"]["environment"] == [["GREETING", "hello world"], ["RATE", "100%"]]
+
+
+def test_collect_warns_about_malformed_disabled_marker(tmp_path, fake_runner) -> None:
+    text = "# schedls:begin name=backup\n# schedls:disabled not a cron job\n# schedls:end name=backup\n"
+
+    def crontab(argv, input_text):
+        assert argv == ["crontab", "-l"]
+        assert input_text is None
+        return text, ""
+
+    fake_runner.available.add("crontab")
+    fake_runner.handlers["crontab"] = crontab
+
+    _, warnings = inspect_ops.collect([CronBackend(fake_runner, _make_paths(tmp_path))], [Scope.USER])
+
+    assert warnings == ["cron discovery warning: current user's crontab: line 2: malformed schedls disabled job"]
+
+
+def test_collect_warns_and_mutation_refuses_noncanonical_environment_prefix(tmp_path, fake_runner) -> None:
+    text = '# schedls:begin name=backup\n0 2 * * * GREETING="hello world" /usr/bin/backup\n# schedls:end name=backup\n'
+
+    def crontab(argv, input_text):
+        assert argv == ["crontab", "-l"]
+        assert input_text is None
+        return text, ""
+
+    fake_runner.available.add("crontab")
+    fake_runner.handlers["crontab"] = crontab
+    backend = CronBackend(fake_runner, _make_paths(tmp_path))
+
+    jobs, warnings = inspect_ops.collect([backend], [Scope.USER])
+
+    assert warnings == ["cron discovery warning: current user's crontab: line 2: malformed schedls environment prefix"]
+    with pytest.raises(SafetyRefusalError):
+        backend.plan_update(
+            jobs[0],
+            JobSpec(
+                name="backup",
+                backend=Backend.CRON,
+                scope=Scope.USER,
+                command=jobs[0].command,
+                cron_expression="30 3 * * *",
+            ),
+        )
+
+
+def test_disabled_marker_outside_managed_block_is_not_discovered_as_a_job(tmp_path, fake_runner) -> None:
+    text = "# schedls:disabled 0 2 * * * /usr/bin/backup\n"
+
+    def crontab(argv, input_text):
+        assert argv == ["crontab", "-l"]
+        assert input_text is None
+        return text, ""
+
+    fake_runner.available.add("crontab")
+    fake_runner.handlers["crontab"] = crontab
+
+    jobs = CronBackend(fake_runner, _make_paths(tmp_path)).discover([Scope.USER])
+
+    assert jobs == []
+
+
+def test_plan_set_enabled_user_cron_round_trips_job_line(tmp_path, fake_runner) -> None:
+    original = (
+        "# unrelated comment\n"
+        "# schedls:begin name=backup\n"
+        "0 2 * * * /usr/bin/backup /srv/data\n"
+        "# schedls:end name=backup\n"
+    )
+    state = {"text": original}
+
+    def crontab(argv, input_text):
+        if argv == ["crontab", "-l"]:
+            return state["text"], ""
+        if argv == ["crontab", "-"]:
+            state["text"] = input_text or ""
+            return "", ""
+        return 1, "", "unsupported"
+
+    fake_runner.available.add("crontab")
+    fake_runner.handlers["crontab"] = crontab
+    backend = CronBackend(fake_runner, _make_paths(tmp_path))
+    job = backend.discover([Scope.USER])[0]
+
+    disabled = backend.plan_set_enabled(job, False)
+
+    assert disabled.action == "disable"
+    assert "# unrelated comment" in disabled.payload["new_text"]
+    assert "# schedls:disabled 0 2 * * * /usr/bin/backup /srv/data" in disabled.payload["new_text"]
+    assert backend.apply(disabled).changed is True
+    assert backend.discover([Scope.USER])[0].enabled is False
+
+    enabled = backend.plan_set_enabled(backend.discover([Scope.USER])[0], True)
+
+    assert enabled.action == "enable"
+    assert backend.apply(enabled).changed is True
+    assert state["text"] == original
+
+
+def test_plan_set_enabled_is_noop_when_cron_job_already_has_requested_state(tmp_path, fake_runner) -> None:
+    text = "# schedls:begin name=backup\n0 2 * * * /usr/bin/backup\n# schedls:end name=backup\n"
+
+    def crontab(argv, input_text):
+        assert argv == ["crontab", "-l"]
+        assert input_text is None
+        return text, ""
+
+    fake_runner.available.add("crontab")
+    fake_runner.handlers["crontab"] = crontab
+    backend = CronBackend(fake_runner, _make_paths(tmp_path))
+    job = backend.discover([Scope.USER])[0]
+
+    plan = backend.plan_set_enabled(job, True)
+    result = backend.apply(plan)
+
+    assert plan.payload["mode"] == "noop"
+    assert result.changed is False
+    assert [call[0] for call in fake_runner.calls] == [
+        ["crontab", "-l"],
+        ["crontab", "-l"],
+        ["crontab", "-l"],
+    ]
+
+
+def test_plan_set_enabled_rechecks_crontab_before_treating_request_as_a_noop(tmp_path, fake_runner) -> None:
+    active = "# schedls:begin name=backup\n0 2 * * * /usr/bin/backup\n# schedls:end name=backup\n"
+    disabled = active.replace("0 2 * * *", "# schedls:disabled 0 2 * * *")
+    state = {"text": active}
+
+    def crontab(argv, input_text):
+        if argv == ["crontab", "-l"]:
+            return state["text"], ""
+        if argv == ["crontab", "-"]:
+            state["text"] = input_text or ""
+            return "", ""
+        return 1, "", "unsupported"
+
+    fake_runner.available.add("crontab")
+    fake_runner.handlers["crontab"] = crontab
+    backend = CronBackend(fake_runner, _make_paths(tmp_path))
+    stale_job = backend.discover([Scope.USER])[0]
+    state["text"] = disabled
+
+    plan = backend.plan_set_enabled(stale_job, True)
+
+    assert plan.payload["mode"] == "crontab"
+    assert backend.apply(plan).changed is True
+    assert state["text"] == active
+
+
+def test_noop_set_enabled_refuses_if_crontab_changes_before_apply(tmp_path, fake_runner) -> None:
+    active = "# schedls:begin name=backup\n0 2 * * * /usr/bin/backup\n# schedls:end name=backup\n"
+    state = {"text": active}
+
+    def crontab(argv, input_text):
+        assert argv == ["crontab", "-l"]
+        assert input_text is None
+        return state["text"], ""
+
+    fake_runner.available.add("crontab")
+    fake_runner.handlers["crontab"] = crontab
+    backend = CronBackend(fake_runner, _make_paths(tmp_path))
+    plan = backend.plan_set_enabled(backend.discover([Scope.USER])[0], True)
+    state["text"] = active.replace("0 2 * * *", "# schedls:disabled 0 2 * * *")
+
+    with pytest.raises(SafetyRefusalError, match="crontab changed"):
+        backend.apply(plan)
+
+
+def test_noop_set_enabled_refuses_if_system_drop_in_changes_before_apply(tmp_path, fake_runner, monkeypatch) -> None:
+    paths = _make_paths(tmp_path)
+    path = _write(
+        tmp_path / "etc/cron.d/schedls-backup",
+        renderer.render_system_file("backup", ["0 2 * * * root /usr/bin/backup"]),
+    )
+    backend = CronBackend(fake_runner, paths)
+    job = backend.discover([Scope.SYSTEM])[0]
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    monkeypatch.setattr("schedls.backends.cron.check_trusted_directory", lambda path, *, expected_uid: None)
+
+    plan = backend.plan_set_enabled(job, True)
+    path.write_text(renderer.render_system_file("backup", ["# schedls:disabled 0 2 * * * root /usr/bin/backup"]))
+
+    with pytest.raises(SafetyRefusalError, match="drop-in changed"):
+        backend.apply(plan)
+
+
+def test_plan_set_enabled_system_cron_preserves_run_as(tmp_path, fake_runner, monkeypatch) -> None:
+    paths = _make_paths(tmp_path)
+    path = _write(
+        tmp_path / "etc/cron.d/schedls-backup",
+        renderer.render_system_file("backup", ["0 2 * * * www-data /usr/bin/backup /srv/data"]),
+    )
+    backend = CronBackend(fake_runner, paths)
+    job = backend.discover([Scope.SYSTEM])[0]
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    trusted_directories: list[tuple[str, int]] = []
+
+    def check_trusted_directory(path: str, *, expected_uid: int) -> None:
+        trusted_directories.append((path, expected_uid))
+
+    monkeypatch.setattr("schedls.backends.cron.check_trusted_directory", check_trusted_directory)
+
+    plan = backend.plan_set_enabled(job, False)
+
+    assert plan.action == "disable"
+    assert plan.files[0].path == str(path)
+    assert "# schedls:disabled 0 2 * * * www-data /usr/bin/backup /srv/data" in plan.files[0].content
+    assert trusted_directories == [(paths.cron_d, 0)]
+    assert CronBackend(fake_runner, paths).capabilities.enable is True
+    assert CronBackend(fake_runner, paths).capabilities.disable is True
+
+
+def test_plan_set_enabled_system_cron_requires_root(tmp_path, fake_runner, monkeypatch) -> None:
+    paths = _make_paths(tmp_path)
+    _write(
+        tmp_path / "etc/cron.d/schedls-backup",
+        renderer.render_system_file("backup", ["0 2 * * * root /usr/bin/backup"]),
+    )
+    backend = CronBackend(fake_runner, paths)
+    job = backend.discover([Scope.SYSTEM])[0]
+    monkeypatch.setattr(os, "geteuid", lambda: 1000)
+
+    with pytest.raises(SafetyRefusalError):
+        backend.plan_set_enabled(job, False)
+
+
+def test_plan_set_enabled_system_cron_refuses_unexpected_path(tmp_path, fake_runner, monkeypatch) -> None:
+    paths = _make_paths(tmp_path)
+    _write(
+        tmp_path / "etc/cron.d/schedls-backup",
+        renderer.render_system_file("backup", ["0 2 * * * root /usr/bin/backup"]),
+    )
+    backend = CronBackend(fake_runner, paths)
+    job = backend.discover([Scope.SYSTEM])[0]
+    unexpected_job = replace(job, source=replace(job.source, path=str(tmp_path / "unexpected")))
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    monkeypatch.setattr("schedls.backends.cron.check_trusted_directory", lambda path, *, expected_uid: None)
+
+    with pytest.raises(SafetyRefusalError, match="unexpected system cron file"):
+        backend.plan_set_enabled(unexpected_job, False)
+
+
+def test_plan_update_disabled_system_cron_preserves_disabled_state(tmp_path, fake_runner, monkeypatch) -> None:
+    paths = _make_paths(tmp_path)
+    _write(
+        tmp_path / "etc/cron.d/schedls-backup",
+        renderer.render_system_file("backup", ["# schedls:disabled 0 2 * * * www-data /usr/bin/backup"]),
+    )
+    backend = CronBackend(fake_runner, paths)
+    job = backend.discover([Scope.SYSTEM])[0]
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    monkeypatch.setattr("schedls.backends.cron.check_trusted_directory", lambda path, *, expected_uid: None)
+
+    plan = backend.plan_update(
+        job,
+        _system_spec(name="backup", command=job.command, cron_expression="30 3 * * *"),
+    )
+
+    assert "# schedls:disabled 30 3 * * * www-data /usr/bin/backup" in plan.files[0].content
+
+
+def test_plan_update_disabled_user_cron_preserves_disabled_state(tmp_path, fake_runner) -> None:
+    text = (
+        "# schedls:begin name=backup\n"
+        "# schedls:disabled 0 2 * * * /usr/bin/backup /srv/data\n"
+        "# schedls:end name=backup\n"
+    )
+
+    def crontab(argv, input_text):
+        assert argv == ["crontab", "-l"]
+        assert input_text is None
+        return text, ""
+
+    fake_runner.available.add("crontab")
+    fake_runner.handlers["crontab"] = crontab
+    backend = CronBackend(fake_runner, _make_paths(tmp_path))
+    job = backend.discover([Scope.USER])[0]
+
+    plan = backend.plan_update(
+        job,
+        JobSpec(
+            name="backup",
+            backend=Backend.CRON,
+            scope=Scope.USER,
+            command=job.command,
+            cron_expression="30 3 * * *",
+        ),
+    )
+
+    assert "# schedls:disabled 30 3 * * * /usr/bin/backup /srv/data" in plan.payload["new_text"]
 
 
 def test_discovers_periodic_directories(tmp_path, fake_runner) -> None:
@@ -128,6 +475,20 @@ def test_malformed_drop_in_is_unmanaged(tmp_path, fake_runner) -> None:
     assert jobs[0].warnings
 
 
+def test_collect_warns_when_malformed_drop_in_has_no_job_lines(tmp_path, fake_runner, monkeypatch) -> None:
+    paths = _make_paths(tmp_path)
+    path = _write(tmp_path / "etc/cron.d/schedls-broken", "")
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+
+    jobs, warnings = inspect_ops.collect([CronBackend(fake_runner, paths)], [Scope.SYSTEM])
+
+    assert jobs == []
+    assert warnings == [
+        f"cron discovery warning: {path} looks like a schedls drop-in but its managed block is missing "
+        "or malformed; treating its jobs as unmanaged."
+    ]
+
+
 def _system_spec(**overrides) -> JobSpec:
     values = {
         "name": "backup",
@@ -139,6 +500,58 @@ def _system_spec(**overrides) -> JobSpec:
     }
     values.update(overrides)
     return JobSpec(**values)
+
+
+def test_plan_create_user_cron_with_execution_local_environment(tmp_path, fake_runner) -> None:
+    state = {"text": "# unrelated job\n0 1 * * * /usr/bin/unrelated\n"}
+
+    def crontab(argv, input_text):
+        if argv == ["crontab", "-l"]:
+            assert input_text is None
+            return state["text"], ""
+        if argv == ["crontab", "-"]:
+            state["text"] = input_text or ""
+            return "", ""
+        return 1, "", "unsupported"
+
+    fake_runner.available.add("crontab")
+    fake_runner.handlers["crontab"] = crontab
+    backend = CronBackend(fake_runner, _make_paths(tmp_path))
+    plan = backend.plan_create(
+        JobSpec(
+            name="backup",
+            backend=Backend.CRON,
+            scope=Scope.USER,
+            command=Command(argv=("/usr/bin/backup", "/srv/data")),
+            cron_expression="0 2 * * *",
+            environment=(("GREETING", "hello world"), ("RATE", "100%"), ("MESSAGE", "50% off")),
+        )
+    )
+
+    assert "0 1 * * * /usr/bin/unrelated" in plan.payload["new_text"]
+    assert (
+        "0 2 * * * GREETING='hello world' RATE=100\\% MESSAGE='50\\% off' /usr/bin/backup /srv/data"
+        in plan.payload["new_text"]
+    )
+    assert "GREETING=" not in plan.payload["new_text"].split("# schedls:begin")[0]
+    assert backend.apply(plan).changed is True
+    jobs_by_name = {job.name: job for job in backend.discover([Scope.USER])}
+    backup = jobs_by_name["backup"]
+    assert backup.cron.environment == (("GREETING", "hello world"), ("RATE", "100%"), ("MESSAGE", "50% off"))
+    update_plan = backend.plan_update(
+        backup,
+        JobSpec(
+            name="backup",
+            backend=Backend.CRON,
+            scope=Scope.USER,
+            command=backup.command,
+            cron_expression="30 3 * * *",
+        ),
+    )
+    assert (
+        "30 3 * * * GREETING='hello world' RATE=100\\% MESSAGE='50\\% off' /usr/bin/backup /srv/data"
+        in update_plan.payload["new_text"]
+    )
 
 
 def test_plan_create_system_cron(tmp_path, fake_runner, monkeypatch) -> None:
@@ -156,6 +569,20 @@ def test_plan_create_system_cron(tmp_path, fake_runner, monkeypatch) -> None:
     assert "0 2 * * * www-data /usr/bin/backup /srv/data" in change.content
     assert "# schedls:begin name=backup" in change.content
     assert ("Run as", "www-data") in plan.summary
+
+
+def test_plan_create_system_cron_with_execution_local_environment(tmp_path, fake_runner, monkeypatch) -> None:
+    paths = _make_paths(tmp_path)
+    (tmp_path / "etc/cron.d").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    monkeypatch.setattr("schedls.backends.cron.check_trusted_directory", lambda path, *, expected_uid: None)
+
+    plan = CronBackend(fake_runner, paths).plan_create(
+        _system_spec(environment=(("GREETING", "hello world"), ("RATE", "100%")))
+    )
+
+    assert "0 2 * * * www-data GREETING='hello world' RATE=100\\% /usr/bin/backup /srv/data" in plan.files[0].content
+    assert "\nGREETING=" not in plan.files[0].content
 
 
 def test_plan_create_system_cron_requires_root(tmp_path, fake_runner, monkeypatch) -> None:
@@ -185,7 +612,7 @@ def test_update_user_cron_preserves_existing_command(tmp_path, fake_runner) -> N
     document = CrontabDocument(
         "# unrelated comment\n"
         "# schedls:begin name=backup\n"
-        "0 2 * * * /usr/bin/printf '50\\%s\\n'\n"
+        "0 2 * * * GREETING='hello world' /usr/bin/printf '50\\%s\\n'\n"
         "# schedls:end name=backup\n"
     )
     state = {"text": document.text}
@@ -216,7 +643,7 @@ def test_update_user_cron_preserves_existing_command(tmp_path, fake_runner) -> N
 
     assert plan.action == "update"
     assert "# unrelated comment" in plan.payload["new_text"]
-    assert "30 3 * * * /usr/bin/printf '50\\%s\\n'" in plan.payload["new_text"]
+    assert "30 3 * * * GREETING='hello world' /usr/bin/printf '50\\%s\\n'" in plan.payload["new_text"]
     assert "50\\\\%" not in plan.payload["new_text"]
     state["text"] = state["text"].replace("0 2 * * *", "15 2 * * *")
     with pytest.raises(SafetyRefusalError, match="crontab changed"):
@@ -235,6 +662,78 @@ def test_update_user_cron_preserves_existing_command(tmp_path, fake_runner) -> N
     result = backend.apply(plan)
     assert result.changed
     assert state["text"] == plan.payload["new_text"]
+
+
+def test_update_disabled_user_cron_replaces_environment_without_reescaping_command(tmp_path, fake_runner) -> None:
+    state = {
+        "text": (
+            "# schedls:begin name=backup\n"
+            "# schedls:disabled 0 2 * * * OLD=old /usr/bin/printf '50\\%s\\n'\n"
+            "# schedls:end name=backup\n"
+        )
+    }
+
+    def crontab(argv, input_text):
+        assert argv == ["crontab", "-l"]
+        assert input_text is None
+        return state["text"], ""
+
+    fake_runner.available.add("crontab")
+    fake_runner.handlers["crontab"] = crontab
+    backend = CronBackend(fake_runner, _make_paths(tmp_path))
+    job = backend.discover([Scope.USER])[0]
+
+    plan = backend.plan_update(
+        job,
+        JobSpec(
+            name="backup",
+            backend=Backend.CRON,
+            scope=Scope.USER,
+            command=job.command,
+            cron_expression="0 2 * * *",
+            environment=(("MESSAGE", "50% off"),),
+            replace_environment=True,
+        ),
+    )
+
+    assert "# schedls:disabled 0 2 * * * MESSAGE='50\\% off' /usr/bin/printf '50\\%s\\n'" in plan.payload["new_text"]
+    assert "OLD=old" not in plan.payload["new_text"]
+    assert "50\\\\%" not in plan.payload["new_text"]
+
+
+def test_update_user_cron_clears_environment_without_reescaping_command(tmp_path, fake_runner) -> None:
+    state = {
+        "text": (
+            "# schedls:begin name=backup\n0 2 * * * OLD=old /usr/bin/printf '50\\%s\\n'\n# schedls:end name=backup\n"
+        )
+    }
+
+    def crontab(argv, input_text):
+        assert argv == ["crontab", "-l"]
+        assert input_text is None
+        return state["text"], ""
+
+    fake_runner.available.add("crontab")
+    fake_runner.handlers["crontab"] = crontab
+    backend = CronBackend(fake_runner, _make_paths(tmp_path))
+    job = backend.discover([Scope.USER])[0]
+
+    plan = backend.plan_update(
+        job,
+        JobSpec(
+            name="backup",
+            backend=Backend.CRON,
+            scope=Scope.USER,
+            command=job.command,
+            cron_expression="0 2 * * *",
+            environment=(),
+            replace_environment=True,
+        ),
+    )
+
+    assert "0 2 * * * /usr/bin/printf '50\\%s\\n'" in plan.payload["new_text"]
+    assert "OLD=old" not in plan.payload["new_text"]
+    assert "50\\\\%" not in plan.payload["new_text"]
 
 
 def test_plan_update_system_cron_preserves_run_as_and_other_content(tmp_path, fake_runner, monkeypatch) -> None:
@@ -269,6 +768,42 @@ def test_plan_update_system_cron_preserves_run_as_and_other_content(tmp_path, fa
     assert "15 4 * * * root /usr/bin/cleanup --full" in plan.files[0].content
     assert "www-data" not in plan.files[0].content
     assert trusted_directories == [(paths.cron_d, 0)]
+
+
+def test_plan_update_system_cron_replaces_environment_without_reescaping_command(
+    tmp_path,
+    fake_runner,
+    monkeypatch,
+) -> None:
+    paths = _make_paths(tmp_path)
+    _write(
+        tmp_path / "etc/cron.d/schedls-cleanup",
+        renderer.render_system_file(
+            "cleanup",
+            ["30 3 * * 0 root OLD=old /usr/bin/printf '50\\%s\\n'"],
+        ),
+    )
+    backend = CronBackend(fake_runner, paths)
+    job = backend.discover([Scope.SYSTEM])[0]
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    monkeypatch.setattr("schedls.backends.cron.check_trusted_directory", lambda path, *, expected_uid: None)
+
+    plan = backend.plan_update(
+        job,
+        JobSpec(
+            name="cleanup",
+            backend=Backend.CRON,
+            scope=Scope.SYSTEM,
+            command=job.command,
+            cron_expression="30 3 * * 0",
+            environment=(("MESSAGE", "50% off"),),
+            replace_environment=True,
+        ),
+    )
+
+    assert "30 3 * * 0 root MESSAGE='50\\% off' /usr/bin/printf '50\\%s\\n'" in plan.files[0].content
+    assert "OLD=old" not in plan.files[0].content
+    assert "50\\\\%" not in plan.files[0].content
 
 
 def test_plan_update_system_cron_requires_root(tmp_path, fake_runner, monkeypatch) -> None:
@@ -337,6 +872,32 @@ def test_apply_file_mode_create_and_remove(tmp_path, fake_runner) -> None:
     result = backend.apply(remove)
     assert result.changed
     assert not path.exists()
+
+
+def test_apply_file_mode_verifies_disabled_cron_job(tmp_path, fake_runner) -> None:
+    paths = _make_paths(tmp_path)
+    path = _write(
+        tmp_path / "etc/cron.d/schedls-backup",
+        renderer.render_system_file("backup", ["0 2 * * * root /usr/bin/backup"]),
+    )
+    disabled_content = renderer.render_system_file("backup", ["# schedls:disabled 0 2 * * * root /usr/bin/backup"])
+    plan = Plan(backend="cron", action="disable")
+    plan.files = [FileChange(path=str(path), content=disabled_content, expected_uid=os.getuid())]
+    plan.payload = {
+        "mode": "file",
+        "action": "disable",
+        "name": "backup",
+        "path": str(path),
+        "expected_uid": os.getuid(),
+        "snapshots": {str(path): path.read_text()},
+        "expected_line": "# schedls:disabled 0 2 * * * root /usr/bin/backup",
+    }
+
+    result = CronBackend(fake_runner, paths).apply(plan)
+
+    assert result.changed is True
+    assert result.messages == ["System cron job disabled."]
+    assert path.read_text() == disabled_content
 
 
 def test_apply_file_update_refuses_changed_snapshot(tmp_path, fake_runner) -> None:
@@ -423,3 +984,5 @@ def test_plan_remove_refuses_unmanaged(tmp_path, fake_runner) -> None:
     job = backend.discover([Scope.SYSTEM])[0]
     with pytest.raises(SafetyRefusalError):
         backend.plan_remove(job)
+    with pytest.raises(SafetyRefusalError):
+        backend.plan_set_enabled(job, False)

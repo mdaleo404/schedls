@@ -77,6 +77,64 @@ def test_expression_percent_not_double_escaped() -> None:
     assert line == "0 2 * * * /bin/echo a\\%b"
 
 
+def test_render_line_with_execution_local_environment() -> None:
+    line = renderer.render_line(
+        "0 2 * * *",
+        Command(argv=("/bin/echo", "a%b")),
+        environment=(("GREETING", "hello world"), ("RATE", "100%")),
+    )
+
+    assert line == "0 2 * * * GREETING='hello world' RATE=100\\% /bin/echo a\\%b"
+
+
+def test_render_shell_line_with_environment_keeps_leading_assignment_semantics() -> None:
+    line = renderer.render_line(
+        "0 2 * * *",
+        Command(shell=True, raw="printf '%s' \"$GREETING\" | cat"),
+        environment=(("GREETING", "hello world"),),
+    )
+
+    assert line == "0 2 * * * GREETING='hello world' printf '\\%s' \"$GREETING\" | cat"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        "hello world",
+        "a'b",
+        r"back\\slash",
+        "$HOME",
+        "#hash",
+        "a=b",
+        "unicode-é中😀",
+        "%",
+        "50% off",
+        r"a\%b c",
+    ],
+)
+def test_execution_local_environment_prefix_round_trips(value: str) -> None:
+    command = renderer.render_command(Command(argv=("/bin/true",)), environment=(("VALUE", value),))
+
+    parsed = renderer.parse_environment_prefix(command)
+
+    assert parsed.malformed is False
+    assert parsed.environment == (("VALUE", value),)
+    assert parsed.command == "/bin/true"
+
+
+@pytest.mark.parametrize("value", ["bad\nvalue", "bad\rvalue", "bad\x00value"])
+def test_execution_local_environment_rejects_unsafe_control_characters(value: str) -> None:
+    with pytest.raises(SafetyRefusalError):
+        renderer.render_command(Command(argv=("/bin/true",)), environment=(("VALUE", value),))
+
+
+def test_parse_environment_prefix_rejects_unescaped_percent() -> None:
+    parsed = renderer.parse_environment_prefix("VALUE='50% off' /bin/true")
+
+    assert parsed.malformed is True
+
+
 @pytest.mark.parametrize(
     "bad",
     ["", "0 2 * *", "0 2 * * * *", "60 2 * * *", "0 25 * * *", "0 2 32 * *", "@bogus", "a b c d e"],

@@ -23,6 +23,7 @@ def collect(backends: Sequence[SchedulerBackend], scopes: Sequence[Scope]) -> tu
             continue
         try:
             jobs.extend(backend.discover(scopes))
+            warnings.extend(f"{backend.name} discovery warning: {warning}" for warning in backend.discovery_warnings())
         except SchedlsError as exc:
             warnings.append(f"{backend.name} discovery failed: {exc.message}")
     jobs.sort(key=lambda job: (job.name, job.backend.value))
@@ -142,6 +143,8 @@ def render_show(output: Output, job: ScheduledJob) -> None:
             details.append(("SHELL", job.cron.shell))
         if job.cron.mailto:
             details.append(("MAILTO", job.cron.mailto))
+        for key, value in job.cron.environment:
+            details.append(("Environment", f"{key}={value}"))
     width = max(len(key) for key, _ in [*core, *details])
     output.key_values(core, width=width)
     if details:

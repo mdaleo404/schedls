@@ -77,8 +77,9 @@ of JSON encoding.
 Helper commands run with a controlled environment (`LC_ALL=C`,
 `SYSTEMD_COLORS=0`, `SYSTEMD_PAGER=cat`, `PAGER=cat`) and never with a shell.
 Pagers and editors are never launched while `schedls` is running. Environment
-values passed with `--env` are written to unit files with systemd quoting and
-are world-readable like any other unit; do not put secrets in them.
+values passed with `--env` are written to unit files with systemd quoting or to
+managed cron command prefixes with shell quoting. They are scheduler
+configuration that may be readable by other users; do not put secrets in them.
 
 ### TOCTOU races
 
@@ -89,11 +90,12 @@ practical.
 
 ### Corrupt or malicious existing configuration
 
-Configuration is treated as opaque data. Malformed `schedls` cron markers cause
-mutation to fail closed rather than guess. Unknown crontab lines are preserved
-byte-for-byte. A systemd unit whose name starts with `schedls-` is only treated
-as managed when its file carries the `# Managed by schedls` and `# Name:`
-markers, so a same-named foreign unit is not modified. Likewise a
+Configuration is treated as opaque data. Malformed `schedls` cron markers or
+managed environment prefixes cause mutation to fail closed rather than guess.
+Unknown crontab lines are preserved byte-for-byte. A systemd unit whose name
+starts with `schedls-` is only treated as managed when its file carries the
+`# Managed by schedls` and `# Name:` markers, so a same-named foreign unit is
+not modified. Likewise a
 `/etc/cron.d/schedls-<name>` drop-in is only managed when its begin/end markers
 match the file name; otherwise it is listed as unmanaged and left alone.
 

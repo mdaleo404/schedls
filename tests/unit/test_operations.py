@@ -118,6 +118,30 @@ def test_render_show_explains_unavailable_cron_history() -> None:
     assert status.index("active") == source.index("current user's crontab")
 
 
+def test_render_show_displays_cron_environment() -> None:
+    job = ScheduledJob(
+        name="cron-1",
+        backend=Backend.CRON,
+        scope=Scope.USER,
+        managed=True,
+        enabled=True,
+        schedule=Schedule(ScheduleKind.CRON, "0 2 * * *"),
+        command=Command(raw="/usr/bin/backup"),
+        source=JobSource("current user's crontab", line=1),
+        cron=CronDetails(
+            expression="0 2 * * *",
+            line=1,
+            environment=(("GREETING", "hello world"),),
+        ),
+    )
+    output, stream = _output()
+
+    inspect_ops.render_show(output, job)
+
+    assert "Environment" in stream.getvalue()
+    assert "GREETING=hello world" in stream.getvalue()
+
+
 def test_render_show_keeps_cron_next_run_null_in_json() -> None:
     job = ScheduledJob(
         name="cron-1",
@@ -329,7 +353,13 @@ def test_plan_update_refuses_unmanaged() -> None:
         backend.plan_update(unmanaged, spec)
 
 
-def _managed_job(name: str = "backup", *, scope: Scope = Scope.USER, service_unit: str | None = None) -> ScheduledJob:
+def _managed_job(
+    name: str = "backup",
+    *,
+    scope: Scope = Scope.USER,
+    service_unit: str | None = None,
+    environment: tuple[tuple[str, str], ...] = (),
+) -> ScheduledJob:
     return replace(
         _job(name),
         scope=scope,
@@ -337,17 +367,25 @@ def _managed_job(name: str = "backup", *, scope: Scope = Scope.USER, service_uni
             timer_unit=f"schedls-{name}.timer",
             service_unit=service_unit or f"schedls-{name}.service",
             on_calendar=("*-*-* 02:00:00",),
+            environment=environment,
         ),
     )
 
 
-def _spec(name: str = "backup") -> JobSpec:
+def _spec(
+    name: str = "backup",
+    *,
+    environment: tuple[tuple[str, str], ...] = (),
+    replace_environment: bool = False,
+) -> JobSpec:
     return JobSpec(
         name=name,
         backend=Backend.SYSTEMD,
         scope=Scope.USER,
         command=Command(argv=("/bin/true",)),
         calendar=("*-*-* 03:00:00",),
+        environment=environment,
+        replace_environment=replace_environment,
     )
 
 
@@ -371,6 +409,43 @@ def test_plan_update_derives_unit_names(tmp_path, monkeypatch) -> None:
         os.path.join(expected_dir, "schedls-backup.timer"),
     ]
     assert "evil" not in " ".join(change.path for change in plan.files)
+
+
+def test_plan_update_systemd_can_clear_environment(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    backend = SystemdBackend(_analyze_runner())
+
+    plan = backend.plan_update(
+        _managed_job(environment=(("OLD", "value"),)),
+        _spec(environment=(), replace_environment=True),
+    )
+
+    service = next(change.content for change in plan.files if change.path.endswith(".service"))
+    assert "Environment=" not in service
+
+
+def test_plan_update_systemd_replaces_environment(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    backend = SystemdBackend(_analyze_runner())
+
+    plan = backend.plan_update(
+        _managed_job(environment=(("OLD", "value"),)),
+        _spec(environment=(("NEW", "value"),), replace_environment=True),
+    )
+
+    service = next(change.content for change in plan.files if change.path.endswith(".service"))
+    assert 'Environment="NEW=value"' in service
+    assert "OLD=value" not in service
+
+
+def test_plan_update_systemd_preserves_environment_without_replacement(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    backend = SystemdBackend(_analyze_runner())
+
+    plan = backend.plan_update(_managed_job(environment=(("OLD", "value"),)), _spec())
+
+    service = next(change.content for change in plan.files if change.path.endswith(".service"))
+    assert 'Environment="OLD=value"' in service
 
 
 def test_verify_units_rejects_traversal() -> None:

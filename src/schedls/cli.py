@@ -150,7 +150,12 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _add_schedule_options(parser: argparse.ArgumentParser, *, creation: bool) -> None:
+def _add_schedule_options(
+    parser: argparse.ArgumentParser,
+    *,
+    creation: bool,
+    environment_clearable: bool = False,
+) -> None:
     parser.add_argument("--calendar", action="append", metavar="EXPR", help="native OnCalendar expression (repeatable)")
     parser.add_argument("--daily", metavar="TIME", help="daily at TIME (HH:MM)")
     parser.add_argument("--weekdays", metavar="TIME", help="Mon..Fri at TIME")
@@ -161,7 +166,15 @@ def _add_schedule_options(parser: argparse.ArgumentParser, *, creation: bool) ->
     parser.add_argument("--jitter", metavar="DURATION", help="randomized delay, e.g. 5min (systemd timers)")
     parser.add_argument("--accuracy", metavar="DURATION", help="timer accuracy window, e.g. 1min (systemd timers)")
     parser.add_argument("--working-directory", metavar="PATH", help="run the command from PATH (systemd timers)")
-    parser.add_argument("--env", action="append", metavar="KEY=VALUE", help="set an environment variable (repeatable)")
+    environment_options = parser.add_mutually_exclusive_group() if environment_clearable else parser
+    environment_options.add_argument(
+        "--env",
+        action="append",
+        metavar="KEY=VALUE",
+        help="set an environment variable (repeatable)",
+    )
+    if environment_clearable:
+        environment_options.add_argument("--clear-env", action="store_true", help="remove all environment variables")
     parser.add_argument("--shell", metavar="SCRIPT", help="run SCRIPT through /bin/sh instead of an argv")
     if creation:
         scope = parser.add_mutually_exclusive_group()
@@ -184,7 +197,7 @@ def _add_creation_options(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_edit_options(parser: argparse.ArgumentParser) -> None:
-    _add_schedule_options(parser, creation=False)
+    _add_schedule_options(parser, creation=False, environment_clearable=True)
     parser.add_argument(
         "--command",
         action="store_true",
@@ -359,7 +372,7 @@ def _cmd_set_enabled(context: Context, args: argparse.Namespace, enabled: bool) 
     if not (backend.capabilities.enable if enabled else backend.capabilities.disable):
         raise UsageError(
             f"{job.backend.value} does not support enable/disable.",
-            hint="Cron has no universal native enabled/disabled concept.",
+            hint="This scheduler backend does not expose an enabled/disabled state for this job.",
         )
     plan = backend.plan_set_enabled(job, enabled)
     result = mutate_ops.run_plan(
@@ -463,6 +476,17 @@ def _parse_environment(entries: list[str] | None) -> tuple[tuple[str, str], ...]
     return tuple(result)
 
 
+def _environment_for_edit(
+    args: argparse.Namespace,
+    existing: tuple[tuple[str, str], ...],
+) -> tuple[tuple[str, str], ...]:
+    if args.clear_env:
+        return ()
+    if args.env is not None:
+        return _parse_environment(args.env)
+    return existing
+
+
 def _calendar_from_args(args: argparse.Namespace) -> list[str]:
     convenience_exprs: list[str] = []
     if args.daily:
@@ -526,8 +550,6 @@ def _spec_for_new(args: argparse.Namespace, tail: list[str]) -> JobSpec:
         raise UsageError("--calendar is a systemd option; use --cron-expr for cron.")
     if args.jitter or args.accuracy or args.persistent or args.working_directory:
         raise UsageError("--jitter/--accuracy/--persistent/--working-directory are systemd options.")
-    if args.env:
-        raise UsageError("--env is a systemd option; cron environment variables are not supported yet.")
     expression = _cron_expression_from_args(args)
     if not expression:
         raise UsageError("no schedule given.", hint="Use --cron-expr or a convenience flag such as --daily.")
@@ -539,6 +561,7 @@ def _spec_for_new(args: argparse.Namespace, tail: list[str]) -> JobSpec:
             command=command,
             cron_expression=expression,
             run_as=args.run_as or "root",
+            environment=environment,
         )
     if args.run_as:
         raise UsageError("--run-as requires --system for cron jobs.", hint="Cron jobs run as the current user.")
@@ -548,6 +571,7 @@ def _spec_for_new(args: argparse.Namespace, tail: list[str]) -> JobSpec:
         scope=Scope.USER,
         command=command,
         cron_expression=expression,
+        environment=environment,
     )
 
 
@@ -581,15 +605,14 @@ def _spec_for_edit(job: ScheduledJob, args: argparse.Namespace, tail: list[str])
             working_directory=args.working_directory
             if args.working_directory is not None
             else (job.systemd.working_directory if job.systemd else None),
-            environment=_parse_environment(args.env) if args.env else (job.systemd.environment if job.systemd else ()),
+            environment=_environment_for_edit(args, job.systemd.environment if job.systemd else ()),
+            replace_environment=args.clear_env or args.env is not None,
         )
     if job.backend is Backend.CRON:
         if args.calendar:
             raise UsageError("--calendar is a systemd option; use --cron-expr for cron.")
         if args.persistent or args.no_persistent or args.jitter or args.accuracy or args.working_directory:
             raise UsageError("--persistent/--jitter/--accuracy/--working-directory are systemd options.")
-        if args.env:
-            raise UsageError("--env is a systemd option; cron environment variables are not supported yet.")
         expression = _cron_expression_from_args(args)
         if expression is None:
             expression = job.cron.expression if job.cron else job.schedule.expression
@@ -601,6 +624,8 @@ def _spec_for_edit(job: ScheduledJob, args: argparse.Namespace, tail: list[str])
             scope=job.scope,
             command=command,
             cron_expression=expression,
+            environment=_environment_for_edit(args, job.cron.environment if job.cron else ()),
+            replace_environment=args.clear_env or args.env is not None,
         )
     raise UsageError(f"editing {job.backend.value} jobs is not supported yet.")
 
@@ -682,6 +707,7 @@ def _wizard_new(args: argparse.Namespace, tail: list[str], prompter: Prompter) -
         _apply_schedule(args, prompter.schedule(backend))
     if backend is Backend.SYSTEMD:
         _wizard_advanced(args, prompter)
+    _wizard_new_environment(args, prompter)
     return args, tail
 
 
@@ -705,10 +731,13 @@ def _wizard_advanced(args: argparse.Namespace, prompter: Prompter) -> None:
     working_directory = prompter.optional_text("Working directory (absolute path)")
     if working_directory is not None:
         args.working_directory = working_directory
+
+
+def _wizard_new_environment(args: argparse.Namespace, prompter: Prompter) -> None:
+    if args.env is not None:
+        return
     if prompter.yes_no("Add environment variables?", default=False):
-        entries = prompter.environment()
-        if entries:
-            args.env = entries
+        args.env = prompter.environment()
 
 
 def _wizard_edit(
@@ -735,6 +764,8 @@ def _wizard_edit(
         _apply_schedule(args, prompter.schedule(job.backend))
     if job.backend is Backend.SYSTEMD:
         _wizard_edit_advanced(job, args, prompter)
+    if job.backend in {Backend.SYSTEMD, Backend.CRON}:
+        _wizard_edit_environment(args, prompter)
     return args, tail
 
 
@@ -760,8 +791,18 @@ def _wizard_edit_advanced(job: ScheduledJob, args: argparse.Namespace, prompter:
     )
     if working_directory is not None:
         args.working_directory = working_directory
-    if prompter.yes_no("Replace environment variables?", default=False):
-        args.env = prompter.environment()
+
+
+def _wizard_edit_environment(args: argparse.Namespace, prompter: Prompter) -> None:
+    if args.env is not None or args.clear_env:
+        return
+    if not prompter.yes_no("Replace environment variables?", default=False):
+        return
+    entries = prompter.environment()
+    if entries:
+        args.env = entries
+    else:
+        args.clear_env = True
 
 
 def _report_created(context: Context, spec: JobSpec) -> None:

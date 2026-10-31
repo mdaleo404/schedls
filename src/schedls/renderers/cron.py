@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 import shlex
+from dataclasses import dataclass
 
 from ..errors import InvalidScheduleError, SafetyRefusalError
 from ..models import Command
@@ -17,6 +18,7 @@ from ..security import MANAGED_COMMENT, has_unsafe_control_characters
 
 BLOCK_BEGIN = "# schedls:begin name={name}{extra}"
 BLOCK_END = "# schedls:end name={name}"
+DISABLED_PREFIX = "# schedls:disabled "
 
 _MARKER_RE = re.compile(r"^#\s*schedls:(?P<kind>begin|end)\s+(?P<meta>.*)$")
 _FIELD_RE = re.compile(r"^[0-9A-Za-z*,/\-]+$")
@@ -33,6 +35,15 @@ _NICKNAMES = {
 _RANGE_RE = re.compile(r"^[0-9]{1,2}-[0-9]{1,2}$")
 _SYSTEM_NAME_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z")
 _USER_RE = re.compile(r"\A[A-Za-z0-9_][A-Za-z0-9_.-]{0,31}\Z")
+_ENV_NAME_RE = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]*\Z")
+_ENV_ASSIGNMENT_START_RE = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]*=")
+
+
+@dataclass(frozen=True)
+class EnvironmentPrefix:
+    environment: tuple[tuple[str, str], ...]
+    command: str
+    malformed: bool = False
 
 
 def escape_percent(text: str) -> str:
@@ -46,19 +57,74 @@ def escape_percent(text: str) -> str:
     return text.replace("%", "\\%")
 
 
-def render_command(command: Command) -> str:
+def unescape_percent(text: str) -> str:
+    """Model cron's conversion of escaped percent characters before shell parsing."""
+    return text.replace("\\%", "%")
+
+
+def render_environment(environment: tuple[tuple[str, str], ...]) -> str:
+    assignments: list[str] = []
+    for key, value in environment:
+        if not _ENV_NAME_RE.match(key):
+            raise InvalidScheduleError(f"invalid environment variable name: {key!r}")
+        if has_unsafe_control_characters(value):
+            raise SafetyRefusalError("cron environment values must not contain NUL or newline")
+        assignments.append(f"{key}={shlex.quote(value)}")
+    return " ".join(assignments)
+
+
+def parse_environment_prefix(command: str) -> EnvironmentPrefix:
+    """Parse schedls's canonical leading shell assignments without executing them."""
+    lexer = shlex.shlex(unescape_percent(command), posix=True)
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    environment: list[tuple[str, str]] = []
+    try:
+        while True:
+            token = lexer.get_token()
+            if token is None or token == lexer.eof:
+                break
+            key, separator, value = token.partition("=")
+            if not separator or not _ENV_NAME_RE.match(key):
+                break
+            environment.append((key, value))
+    except ValueError:
+        if environment or _ENV_ASSIGNMENT_START_RE.match(command):
+            return EnvironmentPrefix((), command, malformed=True)
+        return EnvironmentPrefix((), command)
+
+    if not environment:
+        return EnvironmentPrefix((), command)
+    try:
+        rendered_prefix = escape_percent(render_environment(tuple(environment)))
+    except (InvalidScheduleError, SafetyRefusalError):
+        return EnvironmentPrefix((), command, malformed=True)
+    if not command.startswith(rendered_prefix):
+        return EnvironmentPrefix((), command, malformed=True)
+    remainder = command[len(rendered_prefix) :]
+    if not remainder.startswith(" ") or not remainder[1:]:
+        return EnvironmentPrefix((), command, malformed=True)
+    return EnvironmentPrefix(tuple(environment), remainder[1:])
+
+
+def _render_command_text(command: Command) -> str:
     if command.shell:
         raw = command.raw or ""
         if has_unsafe_control_characters(raw):
             raise SafetyRefusalError("shell command must not contain NUL or newline")
-        return escape_percent(raw)
+        return raw
     if not command.argv:
         raise InvalidScheduleError("no command given")
     for arg in command.argv:
         if has_unsafe_control_characters(arg):
             raise SafetyRefusalError("cron command arguments must not contain NUL or newline")
-    quoted = " ".join(shlex.quote(arg) for arg in command.argv)
-    return escape_percent(quoted)
+    return " ".join(shlex.quote(arg) for arg in command.argv)
+
+
+def render_command(command: Command, *, environment: tuple[tuple[str, str], ...] = ()) -> str:
+    command_text = _render_command_text(command)
+    assignments = render_environment(environment)
+    return escape_percent(f"{assignments} {command_text}" if assignments else command_text)
 
 
 def _validate_field(field: str, *, low: int, high: int, names: bool) -> None:
@@ -120,8 +186,51 @@ def validate_expression(expression: str) -> str:
     return " ".join(fields)
 
 
-def render_line(expression: str, command: Command) -> str:
-    return f"{validate_expression(expression)} {render_command(command)}"
+def render_line(
+    expression: str,
+    command: Command,
+    *,
+    environment: tuple[tuple[str, str], ...] = (),
+) -> str:
+    return f"{validate_expression(expression)} {render_command(command, environment=environment)}"
+
+
+def render_line_from_raw_command(
+    expression: str,
+    raw_command: str,
+    *,
+    environment: tuple[tuple[str, str], ...] = (),
+    user: str | None = None,
+) -> str:
+    """Render an updated line while preserving an existing cron command field.
+
+    ``raw_command`` is already cron-escaped and is therefore appended unchanged.
+    """
+    if not raw_command or has_unsafe_control_characters(raw_command):
+        raise SafetyRefusalError("existing cron command cannot be safely preserved.")
+    command_field = raw_command
+    assignments = render_environment(environment)
+    if assignments:
+        command_field = f"{escape_percent(assignments)} {raw_command}"
+    fields = [validate_expression(expression)]
+    if user is not None:
+        fields.append(validate_run_as(user))
+    fields.append(command_field)
+    return " ".join(fields)
+
+
+def render_disabled_line(line: str) -> str:
+    if has_unsafe_control_characters(line):
+        raise SafetyRefusalError("cron job line must not contain NUL or newline")
+    if line.startswith(DISABLED_PREFIX):
+        return line
+    return f"{DISABLED_PREFIX}{line}"
+
+
+def render_enabled_line(line: str) -> str:
+    if not line.startswith(DISABLED_PREFIX):
+        raise SafetyRefusalError("cron job line is not disabled by schedls")
+    return line[len(DISABLED_PREFIX) :]
 
 
 def validate_run_as(user: str) -> str:
@@ -147,8 +256,16 @@ def validate_system_name(name: str) -> str:
     return name
 
 
-def render_system_line(expression: str, command: Command, user: str) -> str:
-    return f"{validate_expression(expression)} {validate_run_as(user)} {render_command(command)}"
+def render_system_line(
+    expression: str,
+    command: Command,
+    user: str,
+    *,
+    environment: tuple[tuple[str, str], ...] = (),
+) -> str:
+    return (
+        f"{validate_expression(expression)} {validate_run_as(user)} {render_command(command, environment=environment)}"
+    )
 
 
 def render_block(name: str, lines: list[str], *, extra: str = "") -> str:

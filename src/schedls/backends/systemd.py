@@ -7,6 +7,7 @@ import os
 import re
 import tempfile
 from collections.abc import Sequence
+from dataclasses import replace
 from datetime import UTC, datetime
 
 from ..errors import (
@@ -390,6 +391,8 @@ class SystemdBackend(SchedulerBackend):
         if current.backend is not Backend.SYSTEMD or current.systemd is None:
             raise SafetyRefusalError(f"{current.name} is not a systemd timer.")
         self._require_scope(current.scope)
+        if not spec.replace_environment:
+            spec = replace(spec, environment=current.systemd.environment)
         self._validate_spec(spec)
         service_unit = unit_name(current.name, "service")
         timer_unit = unit_name(current.name, "timer")

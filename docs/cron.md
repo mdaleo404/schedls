@@ -58,6 +58,19 @@ block:
 If markers are malformed or a `begin` has no matching `end`, mutations refuse
 to proceed rather than guess.
 
+Existing active blocks need no migration. A disabled managed job keeps the same
+block and replaces its job line with a column-zero comment:
+
+```cron
+# schedls:begin name=backup
+# schedls:disabled 0 2 * * * /usr/local/bin/backup /srv/data
+# schedls:end name=backup
+```
+
+The literal `# schedls:disabled ` prefix is the disabled representation; the
+unprefixed line is enabled. This keeps the job discoverable and reversible
+without giving cron a new file-wide setting.
+
 ## Editing
 
 `schedls edit` supports jobs in valid schedls-managed blocks. It updates only
@@ -68,6 +81,11 @@ markers or does not contain exactly one job line, schedls refuses to edit it.
 When only the schedule changes, schedls retains the existing cron command
 without reverse-parsing or re-quoting shell syntax. Replacing a command uses
 the normal safe command renderer.
+
+When an environment is replaced or cleared, schedls preserves the existing raw
+command field and replaces only its managed assignment prefix. A malformed or
+non-canonical managed prefix produces a warning and makes mutation refuse
+rather than guess at shell syntax.
 
 For a system drop-in, editing requires root and re-checks the expected
 `/etc/cron.d/schedls-<name>` path, ownership, trusted directory, and file
@@ -98,6 +116,32 @@ Use `--run-as USER` to run a system job as another account (default `root`).
 The interactive wizard (`schedls new -i`) asks for the scope, and choosing the
 system scope for a cron job then prompts for the run-as user.
 
+## Per-job environment
+
+`--env KEY=VALUE` creates execution-local POSIX shell assignments on a managed
+job line. They are not file-wide crontab environment declarations, so they do
+not affect unrelated jobs. A user job is rendered like this:
+
+```cron
+0 2 * * * TZ=UTC /usr/local/bin/backup
+```
+
+For a system job, the run-as account stays before the assignments:
+
+```cron
+0 2 * * * backup TZ=UTC /usr/local/bin/backup
+```
+
+`--env` may be repeated. On creation it supplies the complete environment. On
+edit, omitting it preserves the current values; supplying one or more entries
+replaces the complete set; and `--clear-env` explicitly removes every value.
+`--env` and `--clear-env` are mutually exclusive. The interactive wizard offers
+the same choices, including an empty replacement to clear the environment.
+
+Environment values are shell-quoted and percent-escaped with the command field.
+They are scheduler configuration, not secret storage: current-user crontabs and
+system cron drop-ins may be readable by other users.
+
 ## Command rendering
 
 Cron executes command text through a shell. `schedls` keeps an argv internally
@@ -112,6 +156,11 @@ representation exists.
 
 Raw shell syntax is available explicitly with `--shell`. `schedls` never infers
 shell mode from characters such as `|`, `>`, `&&` or `$()`.
+
+For cron `--shell`, a managed environment is an ordinary leading POSIX
+assignment. In a pipeline such as `TZ=UTC producer | consumer`, it applies to
+the first command only; schedls does not add a wrapper to widen the assignment's
+scope. Export a value in the script when later pipeline commands need it.
 
 ## Schedule shortcuts
 
@@ -147,8 +196,15 @@ CronCapabilities(
 
 ## Enable / disable
 
-Cron has no universal native enabled/disabled concept. `schedls enable` and
-`schedls disable` support systemd only and explain this limitation for cron.
+`schedls enable` and `schedls disable` support schedls-managed cron jobs using
+the disabled-line representation above. They are idempotent and only add or
+remove that prefix, preserving the saved schedule and command text exactly.
+Unmanaged cron jobs are never changed.
+
+Older schedls versions do not understand the disabled-line representation. They
+will leave its job inactive because cron treats it as a comment, but cannot edit
+that block correctly. Re-enable the job with a version that supports this
+format before downgrading if you need to manage it with an older release.
 
 ## Logs
 

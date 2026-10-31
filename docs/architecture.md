@@ -98,7 +98,10 @@ time to detect concurrent edits.
 ## JSON schema
 
 `schedls --json` emits a single document on stdout; diagnostics go to stderr.
-The schema version is `1`.
+The schema version is `1`. Its field names are a compatibility contract: this
+release adds no JSON keys or schema version. Managed cron jobs use the existing
+`enabled` field (`true` for active, `false` for disabled); unmanaged or unknown
+cron state remains `null`.
 
 ```json
 {
@@ -128,3 +131,7 @@ field names; missing data is `null`, never invented. Jobs whose `backend` is
 `cron` additionally carry a `cron` object (`expression`, `shell`, `mailto`,
 `line`, `user`, `environment`), where `user` is the run-as account for system
 entries and `null` for the current user's crontab.
+
+Managed cron environments use that existing `cron.environment` array. No
+environment values are added to unrelated cron entries or to a file-wide
+document field.

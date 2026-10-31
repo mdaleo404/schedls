@@ -38,6 +38,7 @@ Before every release:
 [ ] No pager/editor invocation under privilege
 [ ] Unit serialization tests pass
 [ ] Cron serialization tests pass
+[ ] Managed cron state and environment parsing tests pass
 [ ] Symlink tests pass
 [ ] Atomic-write tests pass
 [ ] Trusted-directory ownership/mode tests pass
@@ -49,4 +50,5 @@ Before every release:
 [ ] New mutating operations support --dry-run
 [ ] New mutating operations have clear confirmation behavior
 [ ] Documentation describes new filesystem/state changes
+[ ] Environment values are documented as non-secret scheduler configuration
 ```

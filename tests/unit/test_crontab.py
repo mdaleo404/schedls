@@ -82,6 +82,24 @@ def test_with_updated_job_preserves_all_other_content() -> None:
     )
 
 
+def test_toggling_managed_job_preserves_escaped_command_text() -> None:
+    original = "# schedls:begin name=backup\n0 2 * * * /usr/bin/printf '50\\%s\\n'\n# schedls:end name=backup\n"
+
+    disabled = CrontabDocument(original).with_toggled_enabled("backup", False)
+
+    assert "# schedls:disabled 0 2 * * * /usr/bin/printf '50\\%s\\n'" in disabled
+    assert CrontabDocument(disabled).with_toggled_enabled("backup", True) == original
+
+
+def test_toggling_managed_job_preserves_absent_trailing_newline() -> None:
+    original = "# schedls:begin name=backup\n0 2 * * * /usr/bin/backup\n# schedls:end name=backup"
+
+    disabled = CrontabDocument(original).with_toggled_enabled("backup", False)
+
+    assert not disabled.endswith("\n")
+    assert CrontabDocument(disabled).with_toggled_enabled("backup", True) == original
+
+
 def test_with_updated_job_requires_exactly_one_job() -> None:
     document = CrontabDocument(
         "# schedls:begin name=backup\n"
@@ -109,6 +127,53 @@ def test_malformed_marker_blocks_mutation() -> None:
         document.without_block("broken")
     with pytest.raises(SafetyRefusalError):
         document.with_updated_job("broken", "0 3 * * * /bin/true")
+
+
+def test_malformed_disabled_marker_blocks_mutation() -> None:
+    document = CrontabDocument(
+        "# schedls:begin name=backup\n# schedls:disabled not a cron job\n# schedls:end name=backup\n"
+    )
+
+    assert document.has_malformed_markers()
+    assert "line 2" in document.warnings[0]
+    with pytest.raises(SafetyRefusalError):
+        document.with_toggled_enabled("backup", True)
+
+
+def test_indented_disabled_marker_inside_managed_block_blocks_mutation() -> None:
+    document = CrontabDocument(
+        "# schedls:begin name=backup\n  # schedls:disabled 0 2 * * * /usr/bin/backup\n# schedls:end name=backup\n"
+    )
+
+    assert document.has_malformed_markers()
+    with pytest.raises(SafetyRefusalError):
+        document.with_toggled_enabled("backup", True)
+
+
+@pytest.mark.parametrize("marker", ["# schedls:disabled", "# schedls:disabled "])
+def test_empty_disabled_marker_inside_managed_block_blocks_mutation(marker: str) -> None:
+    document = CrontabDocument(f"# schedls:begin name=backup\n{marker}\n# schedls:end name=backup\n")
+
+    assert document.has_malformed_markers()
+    with pytest.raises(SafetyRefusalError):
+        document.with_toggled_enabled("backup", True)
+
+
+def test_malformed_disabled_marker_outside_managed_block_does_not_block_mutation() -> None:
+    document = CrontabDocument("# schedls:disabled not a cron job\n")
+
+    assert not document.has_malformed_markers()
+    assert "name=backup" in document.with_block("backup", ["0 2 * * * /usr/bin/backup"])
+
+
+def test_unsafe_environment_prefix_inside_managed_block_blocks_mutation() -> None:
+    document = CrontabDocument(
+        "# schedls:begin name=backup\n0 2 * * * VALUE=bad\x00value /usr/bin/backup\n# schedls:end name=backup\n"
+    )
+
+    assert document.has_malformed_markers()
+    with pytest.raises(SafetyRefusalError):
+        document.with_updated_job("backup", "30 3 * * * /usr/bin/backup")
 
 
 def test_empty_crontab() -> None:

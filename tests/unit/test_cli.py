@@ -1,14 +1,31 @@
 from __future__ import annotations
 
+import argparse
+import io
 import os
 import subprocess
 import sys
 
 import pytest
 
-from schedls.cli import _parse_environment, _spec_for_edit, _spec_for_new, build_parser, main, split_command
+from schedls.backends.cron import CronBackend
+from schedls.backends.systemd import SystemdBackend
+from schedls.cli import (
+    Context,
+    _cmd_set_enabled,
+    _parse_environment,
+    _spec_for_edit,
+    _spec_for_new,
+    build_parser,
+    main,
+    split_command,
+)
 from schedls.errors import InvalidNameError, UsageError
+from schedls.interact import Interaction
 from schedls.models import Backend, Command, CronDetails, JobSource, Schedule, ScheduledJob, ScheduleKind, Scope
+from schedls.output import Output
+
+from ..conftest import FakeRunner
 
 
 def test_split_command() -> None:
@@ -86,6 +103,16 @@ def test_spec_for_new_cron() -> None:
     assert spec.cron_expression == "0 4 * * 0"
 
 
+def test_spec_for_new_cron_accepts_environment() -> None:
+    args = build_parser().parse_args(
+        ["new", "cleanup", "--cron", "--cron-expr", "0 4 * * 0", "--env", "GREETING=hello world", "--env", "RATE=100%"]
+    )
+
+    spec = _spec_for_new(args, ["/usr/local/bin/cleanup"])
+
+    assert spec.environment == (("GREETING", "hello world"), ("RATE", "100%"))
+
+
 def test_spec_for_new_system_scope() -> None:
     args = build_parser().parse_args(["new", "x", "--timer", "--daily", "02:00", "--system"])
     spec = _spec_for_new(args, ["/bin/true"])
@@ -137,7 +164,7 @@ def test_spec_for_new_shell_mode() -> None:
 
 
 def test_spec_for_new_rejects_systemd_flags_for_cron() -> None:
-    for extra in (["--env", "A=1"], ["--working-directory", "/srv/data"], ["--persistent"], ["--jitter", "5min"]):
+    for extra in (["--working-directory", "/srv/data"], ["--persistent"], ["--jitter", "5min"]):
         args = build_parser().parse_args(["new", "x", "--cron", "--daily", "02:00", *extra])
         with pytest.raises(UsageError):
             _spec_for_new(args, ["/bin/true"])
@@ -174,7 +201,7 @@ def test_spec_for_new_rejects_run_as_for_timer() -> None:
         _spec_for_new(args, ["/bin/true"])
 
 
-def _cron_job() -> ScheduledJob:
+def _cron_job(*, environment: tuple[tuple[str, str], ...] = ()) -> ScheduledJob:
     return ScheduledJob(
         name="cleanup",
         backend=Backend.CRON,
@@ -184,19 +211,21 @@ def _cron_job() -> ScheduledJob:
         schedule=Schedule(ScheduleKind.CRON, "0 2 * * *"),
         command=Command(raw="/usr/local/bin/cleanup"),
         source=JobSource("current user's crontab", line=1),
-        cron=CronDetails(expression="0 2 * * *", line=1),
+        cron=CronDetails(expression="0 2 * * *", line=1, environment=environment),
     )
 
 
 def test_spec_for_edit_cron_preserves_command_and_changes_schedule() -> None:
     args = build_parser().parse_args(["edit", "cleanup", "--daily", "03:00"])
-    job = _cron_job()
+    job = _cron_job(environment=(("OLD", "value"),))
 
     spec = _spec_for_edit(job, args, [])
 
     assert spec.backend is Backend.CRON
     assert spec.cron_expression == "0 3 * * *"
     assert spec.command == job.command
+    assert spec.environment == (("OLD", "value"),)
+    assert spec.replace_environment is False
 
 
 def test_spec_for_edit_cron_replaces_command() -> None:
@@ -207,7 +236,61 @@ def test_spec_for_edit_cron_replaces_command() -> None:
     assert spec.command.argv == ("/usr/local/bin/cleanup", "--full")
 
 
-@pytest.mark.parametrize("extra", [["--calendar", "daily"], ["--persistent"], ["--env", "A=1"]])
+def test_spec_for_edit_cron_replaces_environment() -> None:
+    args = build_parser().parse_args(["edit", "cleanup", "--env", "NEW=value", "--env", "EMPTY="])
+
+    spec = _spec_for_edit(_cron_job(environment=(("OLD", "value"),)), args, [])
+
+    assert spec.environment == (("NEW", "value"), ("EMPTY", ""))
+    assert spec.replace_environment is True
+
+
+def test_spec_for_edit_cron_clears_environment() -> None:
+    args = build_parser().parse_args(["edit", "cleanup", "--clear-env"])
+
+    spec = _spec_for_edit(_cron_job(environment=(("OLD", "value"),)), args, [])
+
+    assert spec.environment == ()
+    assert spec.replace_environment is True
+
+
+def test_edit_environment_options_are_mutually_exclusive() -> None:
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["edit", "cleanup", "--env", "NEW=value", "--clear-env"])
+
+
+def test_disable_managed_cron_job_through_cli() -> None:
+    state = {"text": ("# schedls:begin name=backup\n0 2 * * * /usr/bin/backup\n# schedls:end name=backup\n")}
+
+    def crontab(argv, input_text):
+        if argv == ["crontab", "-l"]:
+            return state["text"], ""
+        if argv == ["crontab", "-"]:
+            state["text"] = input_text or ""
+            return "", ""
+        return 1, "", "unsupported"
+
+    runner = FakeRunner(handlers={"crontab": crontab}, available={"crontab"})
+    stream = io.StringIO()
+    output = Output(color="never", stdout=stream)
+    context = Context(
+        runner=runner,
+        output=output,
+        interaction=Interaction(output=output, assume_yes=True),
+        systemd=SystemdBackend(runner),
+        cron=CronBackend(runner),
+    )
+    dry_run_args = argparse.Namespace(name="backup", dry_run=True, show_files=False)
+    args = argparse.Namespace(name="backup", dry_run=False, show_files=False)
+
+    assert _cmd_set_enabled(context, dry_run_args, False) == 0
+    assert state["text"] == ("# schedls:begin name=backup\n0 2 * * * /usr/bin/backup\n# schedls:end name=backup\n")
+    assert _cmd_set_enabled(context, args, False) == 0
+    assert "# schedls:disabled 0 2 * * * /usr/bin/backup" in state["text"]
+    assert "Disabled backup." in stream.getvalue()
+
+
+@pytest.mark.parametrize("extra", [["--calendar", "daily"], ["--persistent"]])
 def test_spec_for_edit_cron_rejects_systemd_options(extra: list[str]) -> None:
     args = build_parser().parse_args(["edit", "cleanup", *extra])
 

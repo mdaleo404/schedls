@@ -127,6 +127,9 @@ everything else keeps its current value.
   Passing `--` without `--command` is an error, so the command can never be
   changed by accident.
 - `--no-persistent` clears `Persistent=` on a systemd timer.
+- `--env` supplied during an edit replaces the complete environment. Omitting it
+  preserves the current values; `--clear-env` removes every value instead.
+  `--env` and `--clear-env` cannot be combined.
 - Editing is supported for schedls-managed systemd timers and cron jobs. A cron
   edit changes only the job line in its managed block and preserves every other
   cron line. Editing a system cron drop-in requires root and preserves its
@@ -150,9 +153,9 @@ $ schedls enable backup
 $ schedls disable backup
 ```
 
-Enable or disable a systemd timer. Cron has no portable enabled/disabled
-concept, so these commands explain that limitation and exit without changing
-anything.
+Enable or disable a systemd timer or a schedls-managed cron job. For cron,
+`schedls` comments or restores the managed job line without changing its
+schedule or command; unmanaged cron jobs remain immutable.
 
 ### `logs NAME`
 
@@ -241,7 +244,8 @@ and [cron.md](cron.md#schedule-shortcuts).
 | `--jitter DURATION`     | systemd only   | `--jitter 5min`                  |
 | `--accuracy DURATION`   | systemd only   | `--accuracy 1min`                |
 | `--working-directory PATH` | systemd only | `--working-directory /srv/data`  |
-| `--env KEY=VALUE`       | systemd only   | `--env TZ=UTC` (repeatable)      |
+| `--env KEY=VALUE`       | both           | `--env TZ=UTC` (repeatable)      |
+| `--clear-env`           | both, edit only| remove every environment value    |
 | `--shell SCRIPT`        | both           | `--shell 'echo hi \| tee /tmp/log'` |
 
 Notes:
@@ -253,8 +257,14 @@ Notes:
   `--cron-expr` with `--timer`, or `--persistent` with `--cron`) instead of
   being silently ignored.
 - Cron accepts a single schedule.
-- Cron environment variables are not supported yet; passing `--env` with
-  `--cron` is rejected rather than silently ignored.
+- `--env` may be repeated. On `new`, it sets the complete environment. On
+  `edit`, omitting it preserves the current environment, while supplying it
+  replaces every value. `--clear-env` explicitly selects an empty environment;
+  it is valid only on `edit` and cannot be combined with `--env`.
+- For cron, values are execution-local shell assignments on the managed job
+  line, never file-wide crontab assignments. In system cron, they follow the
+  run-as account. See [cron command rendering](cron.md#command-rendering) for
+  `--shell` pipeline scope.
 - Cron jobs are created for the current user by default. With `--system` (root
   only), schedls creates a system cron drop-in; use `--run-as USER` to choose
   the account that runs it.
@@ -291,6 +301,9 @@ $ schedls edit backup -i
 - `new` asks for the scope (user or system) unless `--user`/`--system` was
   given. Choosing system for a cron job also asks which user it should run as
   (`--run-as`, default `root`).
+- The wizard can add environment values when creating a job and replace them
+  when editing one. Choosing replacement and entering no values clears the
+  environment.
 - A terminal is required. With piped or redirected input, `schedls` exits `3`
   and asks you to pass flags instead.
 - Interactive mode cannot be combined with `--json` (exit `2`).

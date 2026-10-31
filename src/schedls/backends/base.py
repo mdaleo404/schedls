@@ -73,6 +73,9 @@ class SchedulerBackend:
     def discover(self, scopes: Sequence[Scope]) -> list[ScheduledJob]:
         raise NotImplementedError
 
+    def discovery_warnings(self) -> Sequence[str]:
+        return ()
+
     def find(self, name: str) -> ScheduledJob | None:
         for job in self.discover([Scope.USER, Scope.SYSTEM]):
             if job.name == name:

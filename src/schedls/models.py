@@ -141,6 +141,7 @@ class JobSpec:
     accuracy: str | None = None
     working_directory: str | None = None
     environment: tuple[tuple[str, str], ...] = field(default_factory=tuple)
+    replace_environment: bool = False
 
     def schedule(self) -> Schedule:
         if self.backend is Backend.SYSTEMD:

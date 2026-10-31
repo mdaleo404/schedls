@@ -47,7 +47,7 @@ def make_prompter(answers: list[str], *, calendar_validator=None) -> tuple[Promp
     return Prompter(output=output, input_fn=fake, calendar_validator=calendar_validator), fake
 
 
-def _systemd_job() -> ScheduledJob:
+def _systemd_job(*, environment: tuple[tuple[str, str], ...] = ()) -> ScheduledJob:
     return ScheduledJob(
         name="backup",
         backend=Backend.SYSTEMD,
@@ -57,11 +57,11 @@ def _systemd_job() -> ScheduledJob:
         schedule=Schedule(ScheduleKind.CALENDAR, "*-*-* 02:00:00"),
         command=Command(argv=("/usr/local/bin/backup",)),
         source=JobSource(detail="systemd user timer"),
-        systemd=SystemdDetails(on_calendar=("*-*-* 02:00:00",)),
+        systemd=SystemdDetails(on_calendar=("*-*-* 02:00:00",), environment=environment),
     )
 
 
-def _cron_job() -> ScheduledJob:
+def _cron_job(*, environment: tuple[tuple[str, str], ...] = ()) -> ScheduledJob:
     return ScheduledJob(
         name="cleanup",
         backend=Backend.CRON,
@@ -71,7 +71,7 @@ def _cron_job() -> ScheduledJob:
         schedule=Schedule(ScheduleKind.CRON, "0 2 * * *"),
         command=Command(raw="/usr/local/bin/cleanup"),
         source=JobSource(detail="current user's crontab"),
-        cron=CronDetails(expression="0 2 * * *"),
+        cron=CronDetails(expression="0 2 * * *", environment=environment),
     )
 
 
@@ -165,7 +165,7 @@ def test_eof_raises_confirmation_required() -> None:
 def test_wizard_new_systemd(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("sys.stdin", FakeStdin(isatty=True))
     args = build_parser().parse_args(["new", "-i"])
-    answers = ["backup", "", "", "n", "/usr/local/bin/backup /srv/data", "", "02:00", "n"]
+    answers = ["backup", "", "", "n", "/usr/local/bin/backup /srv/data", "", "02:00", "n", "n"]
     prompter, _ = make_prompter(answers)
     args, tail = _wizard_new(args, [], prompter)
     spec = _spec_for_new(args, tail)
@@ -179,7 +179,7 @@ def test_wizard_new_systemd(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_wizard_new_cron(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("sys.stdin", FakeStdin(isatty=True))
     args = build_parser().parse_args(["new", "-i"])
-    answers = ["cleanup", "2", "", "n", "/usr/local/bin/cleanup", "", "04:00"]
+    answers = ["cleanup", "2", "", "n", "/usr/local/bin/cleanup", "", "04:00", "n"]
     prompter, _ = make_prompter(answers)
     args, tail = _wizard_new(args, [], prompter)
     spec = _spec_for_new(args, tail)
@@ -189,20 +189,31 @@ def test_wizard_new_cron(monkeypatch: pytest.MonkeyPatch) -> None:
     assert spec.run_as is None
 
 
+def test_wizard_new_cron_collects_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("sys.stdin", FakeStdin(isatty=True))
+    args = build_parser().parse_args(["new", "cleanup", "-i", "--cron", "--daily", "04:00"])
+    prompter, _ = make_prompter(["", "n", "/usr/local/bin/cleanup", "y", "GREETING=hello world", ""])
+
+    args, tail = _wizard_new(args, [], prompter)
+    spec = _spec_for_new(args, tail)
+
+    assert spec.environment == (("GREETING", "hello world"),)
+
+
 def test_wizard_new_skips_provided_fields(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("sys.stdin", FakeStdin(isatty=True))
     args = build_parser().parse_args(["new", "backup", "-i", "--timer", "--daily", "02:00", "--user"])
-    prompter, fake = make_prompter(["n"])
+    prompter, fake = make_prompter(["n", "n"])
     args, tail = _wizard_new(args, ["/bin/true"], prompter)
     spec = _spec_for_new(args, tail)
     assert spec.calendar == ("*-*-* 02:00:00",)
-    assert fake.prompts == ["Set advanced timer options? [y/N] "]
+    assert fake.prompts == ["Set advanced timer options? [y/N] ", "Add environment variables? [y/N] "]
 
 
 def test_wizard_new_scope_prompt_defaults_to_user(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("sys.stdin", FakeStdin(isatty=True))
     args = build_parser().parse_args(["new", "cleanup", "-i", "--cron", "--daily", "04:00"])
-    prompter, fake = make_prompter(["", "n", "/usr/local/bin/cleanup"])
+    prompter, fake = make_prompter(["", "n", "/usr/local/bin/cleanup", "n"])
     args, tail = _wizard_new(args, [], prompter)
     spec = _spec_for_new(args, tail)
     assert spec.scope is Scope.USER
@@ -214,7 +225,7 @@ def test_wizard_new_scope_prompt_defaults_to_user(monkeypatch: pytest.MonkeyPatc
 def test_wizard_new_system_cron_prompts_run_as(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("sys.stdin", FakeStdin(isatty=True))
     args = build_parser().parse_args(["new", "report", "-i", "--cron", "--daily", "04:00"])
-    prompter, _ = make_prompter(["2", "www-data", "n", "/usr/local/bin/report"])
+    prompter, _ = make_prompter(["2", "www-data", "n", "/usr/local/bin/report", "n"])
     args, tail = _wizard_new(args, [], prompter)
     spec = _spec_for_new(args, tail)
     assert spec.scope is Scope.SYSTEM
@@ -224,7 +235,7 @@ def test_wizard_new_system_cron_prompts_run_as(monkeypatch: pytest.MonkeyPatch) 
 def test_wizard_new_system_cron_run_as_defaults_to_root(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("sys.stdin", FakeStdin(isatty=True))
     args = build_parser().parse_args(["new", "report", "-i", "--cron", "--daily", "04:00"])
-    prompter, _ = make_prompter(["2", "", "n", "/usr/local/bin/report"])
+    prompter, _ = make_prompter(["2", "", "n", "/usr/local/bin/report", "n"])
     args, tail = _wizard_new(args, [], prompter)
     spec = _spec_for_new(args, tail)
     assert spec.scope is Scope.SYSTEM
@@ -234,7 +245,7 @@ def test_wizard_new_system_cron_run_as_defaults_to_root(monkeypatch: pytest.Monk
 def test_wizard_new_system_cron_run_as_reprompts(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("sys.stdin", FakeStdin(isatty=True))
     args = build_parser().parse_args(["new", "report", "-i", "--cron", "--daily", "04:00"])
-    prompter, fake = make_prompter(["2", "bad user", "www-data", "n", "/usr/local/bin/report"])
+    prompter, fake = make_prompter(["2", "bad user", "www-data", "n", "/usr/local/bin/report", "n"])
     args, tail = _wizard_new(args, [], prompter)
     spec = _spec_for_new(args, tail)
     assert spec.run_as == "www-data"
@@ -246,7 +257,7 @@ def test_wizard_new_provided_scope_and_run_as_are_not_reasked(monkeypatch: pytes
     args = build_parser().parse_args(
         ["new", "report", "-i", "--cron", "--system", "--run-as", "root", "--daily", "04:00"]
     )
-    prompter, fake = make_prompter(["n", "/usr/local/bin/report"])
+    prompter, fake = make_prompter(["n", "/usr/local/bin/report", "n"])
     args, tail = _wizard_new(args, [], prompter)
     spec = _spec_for_new(args, tail)
     assert spec.scope is Scope.SYSTEM
@@ -257,7 +268,7 @@ def test_wizard_new_provided_scope_and_run_as_are_not_reasked(monkeypatch: pytes
 def test_wizard_new_systemd_scope_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("sys.stdin", FakeStdin(isatty=True))
     args = build_parser().parse_args(["new", "backup", "-i", "--timer", "--daily", "02:00"])
-    prompter, _ = make_prompter(["2", "n", "/usr/local/bin/backup", "n"])
+    prompter, _ = make_prompter(["2", "n", "/usr/local/bin/backup", "n", "n"])
     args, tail = _wizard_new(args, [], prompter)
     spec = _spec_for_new(args, tail)
     assert spec.scope is Scope.SYSTEM
@@ -268,7 +279,7 @@ def test_wizard_edit_changes_schedule(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("sys.stdin", FakeStdin(isatty=True))
     job = _systemd_job()
     args = build_parser().parse_args(["edit", "backup", "-i"])
-    answers = ["n", "y", "", "03:00", "n"]
+    answers = ["n", "y", "", "03:00", "n", "n"]
     prompter, _ = make_prompter(answers)
     args, tail = _wizard_edit(job, args, [], prompter)
     spec = _spec_for_edit(job, args, tail)
@@ -278,19 +289,67 @@ def test_wizard_edit_changes_schedule(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_wizard_edit_changes_cron_schedule(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("sys.stdin", FakeStdin(isatty=True))
     args = build_parser().parse_args(["edit", "cleanup", "-i"])
-    prompter, _ = make_prompter(["n", "y", "", "03:00"])
+    prompter, _ = make_prompter(["n", "y", "", "03:00", "n"])
     args, tail = _wizard_edit(_cron_job(), args, [], prompter)
     spec = _spec_for_edit(_cron_job(), args, tail)
 
     assert spec.cron_expression == "0 3 * * *"
 
 
+def test_wizard_edit_cron_can_clear_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("sys.stdin", FakeStdin(isatty=True))
+    job = _cron_job(environment=(("OLD", "value"),))
+    args = build_parser().parse_args(["edit", "cleanup", "-i"])
+    prompter, _ = make_prompter(["n", "n", "y", ""])
+
+    args, tail = _wizard_edit(job, args, [], prompter)
+    spec = _spec_for_edit(job, args, tail)
+
+    assert args.clear_env is True
+    assert spec.environment == ()
+
+
+def test_wizard_edit_cron_replaces_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("sys.stdin", FakeStdin(isatty=True))
+    job = _cron_job(environment=(("OLD", "value"),))
+    args = build_parser().parse_args(["edit", "cleanup", "-i"])
+    prompter, _ = make_prompter(["n", "n", "y", "NEW=value", ""])
+
+    args, tail = _wizard_edit(job, args, [], prompter)
+    spec = _spec_for_edit(job, args, tail)
+
+    assert spec.environment == (("NEW", "value"),)
+    assert spec.replace_environment is True
+
+
+def test_wizard_edit_systemd_can_clear_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("sys.stdin", FakeStdin(isatty=True))
+    job = _systemd_job(environment=(("OLD", "value"),))
+    args = build_parser().parse_args(["edit", "backup", "-i"])
+    prompter, _ = make_prompter(["n", "n", "n", "y", ""])
+
+    args, tail = _wizard_edit(job, args, [], prompter)
+    spec = _spec_for_edit(job, args, tail)
+
+    assert args.clear_env is True
+    assert spec.environment == ()
+
+
 def test_wizard_edit_keeps_changes_optional(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("sys.stdin", FakeStdin(isatty=True))
     job = _systemd_job()
     args = build_parser().parse_args(["edit", "backup", "-i"])
-    prompter, _ = make_prompter(["n", "n", "n"])
+    prompter, _ = make_prompter(["n", "n", "n", "n"])
     args, tail = _wizard_edit(job, args, [], prompter)
     spec = _spec_for_edit(job, args, tail)
     assert spec.calendar == ("*-*-* 02:00:00",)
     assert tail == []
+
+
+def test_spec_for_edit_systemd_clears_environment() -> None:
+    args = build_parser().parse_args(["edit", "backup", "--clear-env"])
+
+    spec = _spec_for_edit(_systemd_job(environment=(("OLD", "value"),)), args, [])
+
+    assert spec.environment == ()
+    assert spec.replace_environment is True

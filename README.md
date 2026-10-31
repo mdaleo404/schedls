@@ -114,7 +114,12 @@ Create a cron job:
 
 ```console
 $ schedls new cleanup --cron --cron-expr '0 4 * * 0' -- /usr/local/bin/cleanup
+$ schedls new backup --cron --daily 02:00 --env TZ=UTC -- /usr/local/bin/backup
 ```
+
+Cron `--env` values apply only to that managed job; they are scheduler
+configuration rather than secret storage. Managed cron jobs can also be enabled
+or disabled without deleting their saved schedule.
 
 Create a system cron drop-in as root (runs as `root` unless `--run-as` is given):
 
